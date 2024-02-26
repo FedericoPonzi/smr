@@ -1,5 +1,5 @@
-use crate::{Accepted, Value};
 use std::collections::HashMap;
+use crate::multipaxos::{Accepted, Value};
 
 pub struct Learner {
     value: Option<Value>,

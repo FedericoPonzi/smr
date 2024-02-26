@@ -1,5 +1,3 @@
-use crate::Message;
-
 pub trait Channel {
     fn send_message() -> anyhow::Result<()>;
     fn receive_message<F>(func: F) -> anyhow::Result<()>
@@ -7,20 +5,20 @@ pub trait Channel {
         F: FnOnce() -> String;
 }
 
-pub struct SharedMemoryChannel {
-    buffer: Vec<Message>,
+pub struct SharedMemoryChannel<M> {
+    buffer: Vec<M>,
 }
-impl SharedMemoryChannel {
+impl <M> SharedMemoryChannel<M> {
     pub fn new() -> Self {
         SharedMemoryChannel { buffer: vec![] }
     }
 }
-impl Default for SharedMemoryChannel {
+impl <M> Default for SharedMemoryChannel<M> {
     fn default() -> Self {
         Self::new()
     }
 }
-impl Channel for SharedMemoryChannel {
+impl <M> Channel for SharedMemoryChannel<M> {
     fn send_message() -> anyhow::Result<()> {
         Ok(())
     }

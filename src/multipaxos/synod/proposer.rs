@@ -1,7 +1,5 @@
-use crate::synod::messages::{Promise, Proposal};
-use crate::synod::MaxAcceptedProposal;
-use crate::{Ballot, Value};
 use std::collections::HashSet;
+use crate::multipaxos::{Ballot, MaxAcceptedProposal, Promise, Proposal, Value};
 
 #[derive(Default)]
 struct ProposerBallotState {

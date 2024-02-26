@@ -1,5 +1,4 @@
-use crate::synod::MaxAcceptedProposal;
-use crate::{Ballot, Value};
+use crate::multipaxos::{Ballot, MaxAcceptedProposal, Value};
 
 pub struct Proposal {
     pub(crate) ballot: Ballot,

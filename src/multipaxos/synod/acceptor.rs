@@ -1,5 +1,4 @@
-use crate::channel::Channel;
-use crate::synod::MaxAcceptedProposal;
+use crate::Channel;
 /**
  ** * A1: an acceptor can only adopt strictly increasing ballot numbers;
  ** * A2: an acceptor α can only add 〈b, s, c〉 to α.accepted (i.p., accept 〈b, s, c〉) if b = α.ballot num;
@@ -9,7 +8,7 @@ use crate::synod::MaxAcceptedProposal;
  ** * A5: Suppose that for each α among a majority of acceptors, 〈b, s, c〉 ∈ α.accepted. If b′ > b and 〈b′, s, c′〉 ∈ α′.accepted, then c = c′.
  **     We will consider this crucial invariant in more detail later.
  **/
-use crate::{Accept, Accepted, Ballot, Promise, Proposal};
+use crate::multipaxos::{Accept, Accepted, Ballot, MaxAcceptedProposal, Promise, Proposal};
 
 pub struct Acceptor {
     pub(crate) max_ballot: Ballot,
@@ -57,11 +56,11 @@ impl Default for Acceptor {
 
 #[cfg(test)]
 mod test {
-    use crate::{Accept, Proposal};
+    use crate::multipaxos::{Accept, Acceptor, Proposal};
 
     #[test]
     fn test_acceptor() {
-        let mut acceptor = crate::Acceptor::new();
+        let mut acceptor = Acceptor::new();
         let response = acceptor.handle_proposal(Proposal { ballot: 1 });
         assert!(response.is_some());
         let accepted = Accept {
