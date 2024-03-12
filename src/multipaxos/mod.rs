@@ -1,19 +1,13 @@
-mod synod;
-
 pub use synod::*;
+
 use crate::Channel;
+
+mod synod;
 
 type Ballot = u32;
 
-// This is the value that proposer is going to send. It can be a command c.
+// This is the value that proposer is going to send. It should be a Command c.
 type Value = u32;
-
-enum Message {
-    Proposal(Proposal),
-    ProposalResponse(Promise),
-    Accept(Accept),
-    Accepted(Accepted),
-}
 
 /// A paxos node is a process that participates in a paxos consensus algorithm.
 /// it's the main entry to the paxos algorithm.
@@ -22,6 +16,7 @@ pub struct Node<T: Channel> {
     channel: T,
     state: NodeState,
 }
+
 struct NodeState {
     round: Vec<Value>,
 }
