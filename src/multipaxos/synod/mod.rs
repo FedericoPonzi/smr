@@ -64,6 +64,10 @@ impl PaxosInstance {
                 Ok(None)
             }
             MessageKind::AckAcceptMsg(msg) => Ok(self.proposer.handle_message(AckAcceptMsg(msg))),
+            MessageKind::RequestCommandToLeader(cmd) => {
+                let resp = self.proposer.handle_message(message);
+                Ok(resp)
+            }
         }
     }
     pub fn get_value(&self) -> Option<Value> {
@@ -73,6 +77,7 @@ impl PaxosInstance {
 
 #[cfg(test)]
 mod tests {
+    use crate::multipaxos::MessageKind::RequestCommandToLeader;
     use crate::multipaxos::{Accept, AckAccept, MessageKind, Prepare, Promise};
     use crate::PaxosInstance;
 
@@ -93,6 +98,12 @@ mod tests {
                 promise
             );
         }
+        let propose = paxos.handle_message(RequestCommandToLeader(123))?;
+        assert!(
+            matches!(propose, Some(MessageKind::PrepareMsg(_)),),
+            "{:?}",
+            propose
+        );
 
         // lower ballot, acceptor doesn't care
         let promise = paxos.handle_message(Prepare {

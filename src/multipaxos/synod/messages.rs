@@ -10,6 +10,7 @@ pub struct Message {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum MessageKind {
+    RequestCommandToLeader(Value),
     PrepareMsg(Prepare),
     PromiseMsg(Promise),
     AcceptMsg(Accept),

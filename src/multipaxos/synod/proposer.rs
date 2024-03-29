@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::fmt::Debug;
 
+use log::debug;
+
 use crate::multipaxos::{
     Accept, AckAccept, Ballot, Learn, MaxAcceptedProposal, MessageKind, Prepare, Promise, Value,
 };
@@ -136,6 +138,10 @@ impl InnerState {
     pub fn handle_message(self, message: MessageKind) -> (Option<MessageKind>, InnerState) {
         match (self, message) {
             (
+                InnerState::InitialInnerState(mut state),
+                MessageKind::RequestCommandToLeader(val),
+            ) => wrap_message(state.new_prepare(val)),
+            (
                 InnerState::ProposalInnerState(mut state_wrapper),
                 MessageKind::PromiseMsg(promise),
             ) => wrap_message(state_wrapper.handle_promise(promise)),
@@ -169,11 +175,15 @@ impl Proposer {
         self.inner_state = new_state;
         msg.unwrap()
     }
-    pub fn handle_message<T: Into<MessageKind>>(&mut self, message: T) -> Option<MessageKind> {
-        let (message, new_state) = self.inner_state.clone().handle_message(message.into());
-        println!("message: {:?}", message);
+    pub fn handle_message<T: Into<MessageKind> + Debug>(
+        &mut self,
+        message: T,
+    ) -> Option<MessageKind> {
+        debug!("Received message: {:?}", message);
+        let (resp_message, new_state) = self.inner_state.clone().handle_message(message.into());
+        debug!("message: {:?}, {:?}", resp_message, new_state);
         self.inner_state = new_state;
-        message
+        resp_message
     }
 }
 
