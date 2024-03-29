@@ -2,14 +2,14 @@ use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use crate::multipaxos::Message;
+use crate::multipaxos::MessageKind;
 
 pub trait Channel: SenderChannel {
-    fn receive(&mut self) -> anyhow::Result<Option<Message>>;
+    fn receive(&mut self) -> anyhow::Result<Option<MessageKind>>;
 }
 
 pub trait SenderChannel {
-    fn send(&mut self, message: Message) -> anyhow::Result<()>;
+    fn send(&mut self, message: MessageKind) -> anyhow::Result<()>;
 }
 
 pub(crate) struct SharedMemoryChannel<T> {
@@ -52,7 +52,7 @@ impl<T> SharedMemoryChannel<T> {
 }
 
 impl<T> SenderChannel for SharedMemoryChannel<T> {
-    fn send(&mut self, message: Message) -> anyhow::Result<()> {
+    fn send(&mut self, message: MessageKind) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -60,7 +60,7 @@ impl<T> SenderChannel for SharedMemoryChannel<T> {
 impl<T> Channel for SharedMemoryChannel<T> {
     // Send data to all receivers
     // Receive data from the channel
-    fn receive(&mut self) -> anyhow::Result<Option<Message>> {
+    fn receive(&mut self) -> anyhow::Result<Option<MessageKind>> {
         let mut inner = self.inner.lock().unwrap();
         if let Some(receiver) = inner.receivers.first() {
             Ok(None)

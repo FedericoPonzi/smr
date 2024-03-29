@@ -9,6 +9,7 @@ pub use multipaxos::PaxosInstance;
  */
 pub mod channel;
 pub mod multipaxos;
+mod persistency;
 
 pub trait Command {}
 

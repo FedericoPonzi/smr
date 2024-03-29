@@ -2,9 +2,14 @@ use crate::multipaxos::{Ballot, MaxAcceptedProposal, Value};
 
 pub type SenderId = u32;
 
-// TODO: probably Message could be enriched with a destination id. Like Proposers, Acceptors, or Leader.
+pub struct Message {
+    // TODO: remove sender_id from inside the message kinds.
+    sender_id: SenderId,
+    msg: MessageKind,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Message {
+pub enum MessageKind {
     PrepareMsg(Prepare),
     PromiseMsg(Promise),
     AcceptMsg(Accept),
@@ -12,33 +17,33 @@ pub enum Message {
     LearnMsg(Learn),
 }
 
-impl From<Prepare> for Message {
+impl From<Prepare> for MessageKind {
     fn from(proposal: Prepare) -> Self {
-        Message::PrepareMsg(proposal)
+        MessageKind::PrepareMsg(proposal)
     }
 }
 
-impl From<Promise> for Message {
+impl From<Promise> for MessageKind {
     fn from(promise: Promise) -> Self {
-        Message::PromiseMsg(promise)
+        MessageKind::PromiseMsg(promise)
     }
 }
 
-impl From<Accept> for Message {
+impl From<Accept> for MessageKind {
     fn from(accept: Accept) -> Self {
-        Message::AcceptMsg(accept)
+        MessageKind::AcceptMsg(accept)
     }
 }
 
-impl From<AckAccept> for Message {
+impl From<AckAccept> for MessageKind {
     fn from(accepted: AckAccept) -> Self {
-        Message::AckAcceptMsg(accepted)
+        MessageKind::AckAcceptMsg(accepted)
     }
 }
 
-impl From<Learn> for Message {
+impl From<Learn> for MessageKind {
     fn from(accepted: Learn) -> Self {
-        Message::LearnMsg(accepted)
+        MessageKind::LearnMsg(accepted)
     }
 }
 

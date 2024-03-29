@@ -3,6 +3,7 @@ pub use learner::Learner;
 pub use messages::*;
 pub use proposer::Proposer;
 
+use crate::multipaxos::MessageKind::AckAcceptMsg;
 use crate::multipaxos::{Ballot, Value};
 
 mod acceptor;
@@ -27,7 +28,7 @@ pub struct PaxosInstance {
 impl PaxosInstance {
     pub fn new(quorum_size: u32) -> Self {
         assert!(quorum_size >= 2);
-        let my_id = 0;
+        let my_id = 1;
         let acceptor = Acceptor::new(my_id);
         let proposer = Proposer::new(my_id, quorum_size, 321);
         let learner = Learner::new(quorum_size);
@@ -38,33 +39,31 @@ impl PaxosInstance {
             quorum_size,
         }
     }
-    pub fn prepare_phase1(&mut self) -> anyhow::Result<Message> {
-        let prepare_msg = self.proposer.new_prepare();
-        Ok(prepare_msg.into())
-    }
 
-    pub fn handle_message<T: Into<Message>>(
+    pub fn handle_message<T: Into<MessageKind>>(
         &mut self,
         message: T,
-    ) -> anyhow::Result<Option<Message>> {
+    ) -> anyhow::Result<Option<MessageKind>> {
         let message = message.into();
         match message {
-            Message::PrepareMsg(prepare) => {
+            MessageKind::PrepareMsg(prepare) => {
                 Ok(self.acceptor.handle_prepare(prepare).map(Into::into))
             }
-            Message::PromiseMsg(promise) => {
-                let resp = self.proposer.handle_promise(promise);
-                Ok(resp.map(Into::into))
+            MessageKind::PromiseMsg(promise) => {
+                let resp = self
+                    .proposer
+                    .handle_message(MessageKind::PromiseMsg(promise));
+                Ok(resp)
             }
-            Message::AcceptMsg(accept) => {
+            MessageKind::AcceptMsg(accept) => {
                 let resp = self.acceptor.handle_accept(accept);
                 Ok(resp.map(Into::into))
             }
-            Message::LearnMsg(learn) => {
+            MessageKind::LearnMsg(learn) => {
                 self.learner.handle_learn(learn)?;
                 Ok(None)
             }
-            Message::AckAcceptMsg(msg) => Ok(self.proposer.handle_ack_accept(msg).map(Into::into)),
+            MessageKind::AckAcceptMsg(msg) => Ok(self.proposer.handle_message(AckAcceptMsg(msg))),
         }
     }
     pub fn get_value(&self) -> Option<Value> {
@@ -74,7 +73,7 @@ impl PaxosInstance {
 
 #[cfg(test)]
 mod tests {
-    use crate::multipaxos::{Accept, AckAccept, Message, Prepare, Promise};
+    use crate::multipaxos::{Accept, AckAccept, MessageKind, Prepare, Promise};
     use crate::PaxosInstance;
 
     #[test]
@@ -88,7 +87,11 @@ mod tests {
                     ballot: i,
                 })?
                 .unwrap();
-            assert!(matches!(promise, Message::PromiseMsg(_),), "{:?}", promise);
+            assert!(
+                matches!(promise, MessageKind::PromiseMsg(_),),
+                "{:?}",
+                promise
+            );
         }
 
         // lower ballot, acceptor doesn't care
@@ -110,13 +113,16 @@ mod tests {
         })?;
         assert_eq!(resp, None, "{:?}", paxos);
 
-        let resp = paxos
-            .handle_message(Promise {
-                sender: 102,
-                max_accepted: None,
-            })?
-            .unwrap();
-        assert!(matches!(resp, Message::AcceptMsg(_),), "{:?}", resp);
+        let resp = paxos.handle_message(Promise {
+            sender: 102,
+            max_accepted: None,
+        })?;
+        assert!(
+            matches!(resp, Some(MessageKind::AcceptMsg(_))),
+            "{:?}, paxos: {:?}",
+            resp,
+            paxos
+        );
 
         // acceptors should return ack message
         let resp = paxos
@@ -126,7 +132,7 @@ mod tests {
                 value: 123,
             })?
             .unwrap();
-        assert!(matches!(resp, Message::AckAcceptMsg(_),), "{:?}", resp);
+        assert!(matches!(resp, MessageKind::AckAcceptMsg(_),), "{:?}", resp);
 
         // when proposer sees a quorum of ack accept, it should issue a new learn message
         let resp = paxos.handle_message(AckAccept {
