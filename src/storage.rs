@@ -1,3 +1,4 @@
+//! Module that handles the persistence and durability of messages.
 use std::io::Write;
 
 use anyhow::Result;

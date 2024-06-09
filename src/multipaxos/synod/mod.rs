@@ -3,8 +3,8 @@ pub use learner::Learner;
 pub use messages::*;
 pub use proposer::Proposer;
 
-use crate::multipaxos::MessageKind::AckAcceptMsg;
-use crate::multipaxos::{Ballot, Value};
+use crate::multipaxos::Ballot;
+use crate::CommandTrait;
 
 mod acceptor;
 mod learner;
@@ -12,25 +12,31 @@ mod messages;
 mod proposer;
 
 #[derive(Debug, Clone, Ord, Eq, PartialOrd, PartialEq, Hash)]
-pub struct MaxAcceptedProposal {
+pub struct MaxAcceptedProposal<C: CommandTrait> {
     pub ballot: Ballot,
-    pub value: Value,
+    pub command: C,
 }
 
 #[derive(Debug, Clone)]
-pub struct PaxosInstance {
-    acceptor: Acceptor,
-    proposer: Proposer,
-    learner: Learner,
+pub struct PaxosInstance<C>
+where
+    C: CommandTrait,
+{
+    acceptor: Acceptor<C>,
+    proposer: Proposer<C>,
+    learner: Learner<C>,
     quorum_size: u32,
 }
 
-impl PaxosInstance {
+impl<C> PaxosInstance<C>
+where
+    C: CommandTrait,
+{
     pub fn new(quorum_size: u32) -> Self {
         assert!(quorum_size >= 2);
         let my_id = 1;
         let acceptor = Acceptor::new(my_id);
-        let proposer = Proposer::new(my_id, quorum_size, 321);
+        let proposer = Proposer::new(my_id, quorum_size);
         let learner = Learner::new(quorum_size);
         Self {
             acceptor,
@@ -40,12 +46,13 @@ impl PaxosInstance {
         }
     }
 
-    pub fn handle_message<T: Into<MessageKind>>(
-        &mut self,
-        message: T,
-    ) -> anyhow::Result<Option<MessageKind>> {
+    pub fn handle_message<T>(&mut self, message: T) -> anyhow::Result<Option<MessageKind<C>>>
+    where
+        T: Into<MessageKind<C>>,
+        C: CommandTrait,
+    {
         let message = message.into();
-        match message {
+        match message.clone() {
             MessageKind::PrepareMsg(prepare) => {
                 Ok(self.acceptor.handle_prepare(prepare).map(Into::into))
             }
@@ -63,14 +70,16 @@ impl PaxosInstance {
                 self.learner.handle_learn(learn)?;
                 Ok(None)
             }
-            MessageKind::AckAcceptMsg(msg) => Ok(self.proposer.handle_message(AckAcceptMsg(msg))),
-            MessageKind::RequestCommandToLeader(cmd) => {
+            MessageKind::AckAcceptMsg(msg) => {
+                Ok(self.proposer.handle_message(MessageKind::AckAcceptMsg(msg)))
+            }
+            MessageKind::RequestCommandToLeader(_cmd) => {
                 let resp = self.proposer.handle_message(message);
                 Ok(resp)
             }
         }
     }
-    pub fn get_value(&self) -> Option<Value> {
+    pub fn get_value(&self) -> Option<C> {
         self.learner.value()
     }
 }
@@ -83,10 +92,10 @@ mod tests {
 
     #[test]
     pub fn test_paxosinstance_simple() -> anyhow::Result<()> {
-        let mut paxos = PaxosInstance::new(2);
+        let mut paxos: PaxosInstance<u32> = PaxosInstance::new(2);
         let to = 5;
         for i in 1..=to {
-            let promise = paxos
+            let promise: MessageKind<u32> = paxos
                 .handle_message(Prepare {
                     sender: 100,
                     ballot: i,
@@ -106,25 +115,25 @@ mod tests {
         );
 
         // lower ballot, acceptor doesn't care
-        let promise = paxos.handle_message(Prepare {
+        let promise: Option<MessageKind<u32>> = paxos.handle_message(Prepare {
             sender: 100,
             ballot: 1,
         })?;
         assert_eq!(promise, None, "{:?}", paxos);
         // equal ballot, acceptor doesn't care
-        let promise = paxos.handle_message(Prepare {
+        let promise: Option<MessageKind<u32>> = paxos.handle_message(Prepare {
             sender: 100,
             ballot: to,
         })?;
         assert_eq!(promise, None, "{:?}", paxos);
 
-        let resp = paxos.handle_message(Promise {
+        let resp: Option<MessageKind<u32>> = paxos.handle_message(Promise {
             sender: 101,
             max_accepted: None,
         })?;
         assert_eq!(resp, None, "{:?}", paxos);
 
-        let resp = paxos.handle_message(Promise {
+        let resp: Option<MessageKind<u32>> = paxos.handle_message(Promise {
             sender: 102,
             max_accepted: None,
         })?;
@@ -140,18 +149,18 @@ mod tests {
             .handle_message(Accept {
                 sender: 103,
                 ballot: to,
-                value: 123,
+                command: 123,
             })?
             .unwrap();
         assert!(matches!(resp, MessageKind::AckAcceptMsg(_),), "{:?}", resp);
 
         // when proposer sees a quorum of ack accept, it should issue a new learn message
-        let resp = paxos.handle_message(AckAccept {
+        let resp: Option<MessageKind<u32>> = paxos.handle_message(AckAccept {
             sender: 104,
             ballot: to,
         })?;
         assert_eq!(resp, None, "{:?}", paxos);
-        let resp = paxos.handle_message(AckAccept {
+        let resp: Option<MessageKind<u32>> = paxos.handle_message(AckAccept {
             sender: 105,
             ballot: to,
         })?;

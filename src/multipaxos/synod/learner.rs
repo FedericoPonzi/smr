@@ -6,18 +6,25 @@ use std::collections::HashSet;
 
 use log::debug;
 
-use crate::multipaxos::{Learn, Value};
+use crate::multipaxos::Learn;
+use crate::CommandTrait;
 
 #[derive(Debug, Clone)]
-pub struct Learner {
-    value: Option<Value>,
+pub struct Learner<C>
+where
+    C: CommandTrait,
+{
+    value: Option<C>,
     /// how many voters have voted for this value
     voters: HashSet<u32>,
     ballot: u32,
     pub quorum_size: u32,
 }
 
-impl Learner {
+impl<C> Learner<C>
+where
+    C: CommandTrait,
+{
     pub(crate) fn new(quorum_size: u32) -> Self {
         Self {
             value: None,
@@ -29,7 +36,7 @@ impl Learner {
     pub fn is_value_learned(&self) -> bool {
         self.value.is_some()
     }
-    pub fn handle_learn(&mut self, learn_message: Learn) -> anyhow::Result<()> {
+    pub fn handle_learn(&mut self, learn_message: Learn<C>) -> anyhow::Result<()> {
         if self.is_value_learned() {
             debug!(
                 "Received learn message, but value is already learned. Msg: {:?}",
@@ -40,8 +47,9 @@ impl Learner {
         }
         if learn_message.ballot > self.ballot {
             debug!(
-                "Change of ballot, old ballot: {} new ballot: {}, value: {}",
-                self.ballot, learn_message.ballot, learn_message.value
+                "Change of ballot, old ballot: {} new ballot: {}",
+                self.ballot,
+                learn_message.ballot //, learn_message.command
             );
             self.ballot = learn_message.ballot;
             self.voters.clear();
@@ -49,22 +57,22 @@ impl Learner {
         self.voters.insert(learn_message.sender);
         // if we have a quorum, the value is learnt
         if self.voters.len() >= self.quorum_size as usize {
-            self.value = Some(learn_message.value);
-            debug!(
-                "Value was learned! Value: {:?}, voters: {:?}",
-                self.value, self.voters
-            );
+            self.value = Some(learn_message.command);
+            debug!("Value was learned!voters: {:?}", self.voters);
             // clenaup some memory
             self.voters.clear();
         }
         Ok(())
     }
-    pub fn value(&self) -> Option<Value> {
-        self.value
+    pub fn value(&self) -> Option<C> {
+        self.value.clone()
     }
 }
 
-impl Default for Learner {
+impl<C> Default for Learner<C>
+where
+    C: CommandTrait,
+{
     fn default() -> Self {
         Self::new(3)
     }
@@ -75,71 +83,73 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_learner() {
+    fn test_learner() -> anyhow::Result<()> {
         let mut learner = Learner::new(2);
         learner.handle_learn(Learn {
-            value: 1,
+            command: 1,
             sender: 1,
             ballot: 1,
-        });
+        })?;
         assert!(learner.value().is_none());
         learner.handle_learn(Learn {
-            value: 1,
+            command: 1,
             sender: 2,
             ballot: 1,
-        });
+        })?;
         assert_eq!(learner.value(), Some(1));
 
         // at this point, because we reached the quorum, we ignore any other learn message
         learner.handle_learn(Learn {
-            value: 2,
+            command: 2,
             sender: 3,
             ballot: 2,
-        });
+        })?;
         learner.handle_learn(Learn {
-            value: 2,
+            command: 2,
             sender: 1,
             ballot: 2,
-        });
+        })?;
         assert_eq!(learner.value(), Some(1));
+        Ok(())
     }
 
     #[test]
-    fn test_learner_change_ballot() {
+    fn test_learner_change_ballot() -> anyhow::Result<()> {
         let mut learner = Learner::new(2);
         learner.handle_learn(Learn {
-            value: 1,
+            command: 1,
             sender: 1,
             ballot: 1,
-        });
+        })?;
         assert!(learner.value().is_none());
         learner.handle_learn(Learn {
-            value: 1,
+            command: 1,
             sender: 2,
             ballot: 2,
-        });
+        })?;
         assert!(learner.value().is_none());
 
         learner.handle_learn(Learn {
-            value: 2,
+            command: 2,
             sender: 3,
             ballot: 3,
-        });
+        })?;
         assert!(learner.value().is_none());
 
         // sender repeated the same message
         learner.handle_learn(Learn {
-            value: 2,
+            command: 2,
             sender: 3,
             ballot: 3,
-        });
+        })?;
         assert!(learner.value().is_none());
 
         learner.handle_learn(Learn {
-            value: 2,
+            command: 2,
             sender: 2,
             ballot: 3,
-        });
+        })?;
         assert_eq!(learner.value(), Some(2));
+        Ok(())
     }
 }

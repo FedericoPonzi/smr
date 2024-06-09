@@ -10,15 +10,22 @@
 use crate::multipaxos::{
     Accept, AckAccept, Ballot, MaxAcceptedProposal, Prepare, Promise, SenderId,
 };
+use crate::CommandTrait;
 
 #[derive(Debug, Clone)]
-pub struct Acceptor {
+pub struct Acceptor<C>
+where
+    C: CommandTrait,
+{
     pub my_id: SenderId,
     pub(crate) max_ballot: Ballot,
-    pub(crate) max_accepted: Option<MaxAcceptedProposal>,
+    pub(crate) max_accepted: Option<MaxAcceptedProposal<C>>,
 }
 
-impl Acceptor {
+impl<C> Acceptor<C>
+where
+    C: CommandTrait,
+{
     fn is_safe_to_join_ballot(&self, ballot: Ballot) -> bool {
         self.max_ballot < ballot
     }
@@ -31,7 +38,7 @@ impl Acceptor {
         }
     }
 
-    pub fn handle_prepare(&mut self, p: Prepare) -> Option<Promise> {
+    pub fn handle_prepare(&mut self, p: Prepare) -> Option<Promise<C>> {
         if self.is_safe_to_join_ballot(p.ballot) {
             self.max_ballot = p.ballot;
             Some(Promise {
@@ -43,16 +50,12 @@ impl Acceptor {
         }
     }
 
-    pub fn handle_accept(&mut self, a: Accept) -> Option<AckAccept> {
+    pub fn handle_accept(&mut self, a: Accept<C>) -> Option<AckAccept> {
         if a.ballot >= self.max_ballot {
             self.max_ballot = a.ballot;
             self.max_accepted = Some(MaxAcceptedProposal {
                 ballot: a.ballot,
-                value: a.value,
-            });
-            self.max_accepted = Some(MaxAcceptedProposal {
-                ballot: a.ballot,
-                value: a.value,
+                command: a.command,
             });
             Some(AckAccept {
                 sender: self.my_id,
@@ -79,7 +82,7 @@ mod test {
         let accepted = Accept {
             sender: 1,
             ballot: 1,
-            value: 1,
+            command: 1,
         };
         let accepted_response = acceptor.handle_accept(accepted);
         assert!(accepted_response.is_some());

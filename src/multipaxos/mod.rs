@@ -1,35 +1,48 @@
 pub use synod::*;
 
-use crate::Channel;
+use crate::{Channel, CommandTrait, StateMachine, StateMachineReplication};
 
 mod synod;
 
 type Ballot = u32;
 
-// This is the value that proposer is going to send. It should be a Command c.
-type Value = u32;
-
-/// A paxos node is a process that participates in a paxos consensus algorithm.
+/// A paxos node is a process that participates in a multipaxos consensus algorithm.
 /// It's the main entry to the paxos algorithm.
-pub struct Node<T: Channel> {
+pub struct MultiPaxosNode<T, C>
+where
+    T: Channel<C>,
+    C: CommandTrait,
+{
     id: u32,
     channel: T,
-    state: NodeState,
+    state: InnerState<C>,
 }
 
-struct NodeState {
-    round: Vec<Value>,
+struct InnerState<C> {
+    round: Vec<C>,
 }
 
-impl<T> Node<T>
+impl<T, C> MultiPaxosNode<T, C>
 where
-    T: Channel,
+    T: Channel<C>,
+    C: CommandTrait,
 {
     pub fn new(id: u32, channel: T) -> Self {
         Self {
             id,
             channel,
-            state: NodeState { round: Vec::new() },
+            state: InnerState { round: Vec::new() },
         }
+    }
+}
+
+impl<SM, T, C> StateMachineReplication<SM> for MultiPaxosNode<T, C>
+where
+    T: Channel<C>,
+    SM: StateMachine,
+    C: CommandTrait,
+{
+    fn propose(&mut self, cmd: SM::Command) -> anyhow::Result<SM::State> {
+        todo!()
     }
 }

@@ -3,26 +3,28 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use crate::multipaxos::MessageKind;
+use crate::{Channel, CommandTrait};
 
-pub trait Channel: SenderChannel {
-    fn receive(&mut self) -> anyhow::Result<Option<MessageKind>>;
+pub(crate) struct SharedMemoryChannel<C>
+where
+    C: CommandTrait,
+{
+    inner: Arc<Mutex<Inner<C>>>,
 }
 
-pub trait SenderChannel {
-    fn send(&mut self, message: MessageKind) -> anyhow::Result<()>;
+struct Inner<C>
+where
+    C: CommandTrait,
+{
+    data: VecDeque<C>,
+    senders: Vec<Sender<C>>,
+    receivers: Vec<Receiver<C>>,
 }
 
-pub(crate) struct SharedMemoryChannel<T> {
-    inner: Arc<Mutex<Inner<T>>>,
-}
-
-struct Inner<T> {
-    data: VecDeque<T>,
-    senders: Vec<Sender<T>>,
-    receivers: Vec<Receiver<T>>,
-}
-
-impl<T> SharedMemoryChannel<T> {
+impl<C> SharedMemoryChannel<C>
+where
+    C: CommandTrait,
+{
     // Create a new shared memory channel
     pub fn new() -> Self {
         let inner = Inner {
@@ -36,7 +38,7 @@ impl<T> SharedMemoryChannel<T> {
     }
 
     // Get a sender and receiver pair for a new endpoint
-    fn get_ends(&mut self) -> (Sender<T>, Receiver<T>) {
+    fn get_ends(&mut self) -> (Sender<C>, Receiver<C>) {
         let (sender, receiver) = std::sync::mpsc::channel();
         let mut inner = self.inner.lock().unwrap();
         inner.senders.push(sender.clone());
@@ -51,23 +53,24 @@ impl<T> SharedMemoryChannel<T> {
     }
 }
 
-impl<T> SenderChannel for SharedMemoryChannel<T> {
-    fn send(&mut self, message: MessageKind) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
-
-impl<T> Channel for SharedMemoryChannel<T> {
+impl<C> Channel<C> for SharedMemoryChannel<C>
+where
+    C: CommandTrait,
+{
     // Send data to all receivers
     // Receive data from the channel
-    fn receive(&mut self) -> anyhow::Result<Option<MessageKind>> {
-        let mut inner = self.inner.lock().unwrap();
+    fn receive(&mut self) -> anyhow::Result<Option<MessageKind<C>>> {
+        let inner = self.inner.lock().unwrap();
         if let Some(receiver) = inner.receivers.first() {
             Ok(None)
             //Ok(receiver.recv().ok())
         } else {
             Ok(None)
         }
+    }
+
+    fn send(&mut self, message: MessageKind<C>) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 

@@ -1,49 +1,64 @@
-use crate::multipaxos::{Ballot, MaxAcceptedProposal, Value};
+use std::fmt::{Debug, Formatter};
+
+use crate::multipaxos::{Ballot, MaxAcceptedProposal};
+use crate::CommandTrait;
 
 pub type SenderId = u32;
 
-pub struct Message {
+pub struct Message<C>
+where
+    C: CommandTrait,
+{
     // TODO: remove sender_id from inside the message kinds.
     sender_id: SenderId,
-    msg: MessageKind,
+    msg: MessageKind<C>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum MessageKind {
-    RequestCommandToLeader(Value),
+pub enum MessageKind<C: CommandTrait> {
+    RequestCommandToLeader(C),
     PrepareMsg(Prepare),
-    PromiseMsg(Promise),
-    AcceptMsg(Accept),
+    PromiseMsg(Promise<C>),
+    AcceptMsg(Accept<C>),
     AckAcceptMsg(AckAccept),
-    LearnMsg(Learn),
+    LearnMsg(Learn<C>),
 }
 
-impl From<Prepare> for MessageKind {
+impl<C> From<Prepare> for MessageKind<C>
+where
+    C: CommandTrait,
+{
     fn from(proposal: Prepare) -> Self {
         MessageKind::PrepareMsg(proposal)
     }
 }
 
-impl From<Promise> for MessageKind {
-    fn from(promise: Promise) -> Self {
+impl<C> From<Promise<C>> for MessageKind<C>
+where
+    C: CommandTrait,
+{
+    fn from(promise: Promise<C>) -> Self {
         MessageKind::PromiseMsg(promise)
     }
 }
 
-impl From<Accept> for MessageKind {
-    fn from(accept: Accept) -> Self {
+impl<C> From<Accept<C>> for MessageKind<C>
+where
+    C: CommandTrait,
+{
+    fn from(accept: Accept<C>) -> Self {
         MessageKind::AcceptMsg(accept)
     }
 }
 
-impl From<AckAccept> for MessageKind {
+impl<C: CommandTrait> From<AckAccept> for MessageKind<C> {
     fn from(accepted: AckAccept) -> Self {
         MessageKind::AckAcceptMsg(accepted)
     }
 }
 
-impl From<Learn> for MessageKind {
-    fn from(accepted: Learn) -> Self {
+impl<C: CommandTrait> From<Learn<C>> for MessageKind<C> {
+    fn from(accepted: Learn<C>) -> Self {
         MessageKind::LearnMsg(accepted)
     }
 }
@@ -56,16 +71,19 @@ pub struct Prepare {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Promise {
+pub struct Promise<C>
+where
+    C: CommandTrait,
+{
     pub sender: SenderId,
-    pub(crate) max_accepted: Option<MaxAcceptedProposal>,
+    pub(crate) max_accepted: Option<MaxAcceptedProposal<C>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Accept {
+pub struct Accept<C: CommandTrait> {
     pub sender: SenderId,
     pub(crate) ballot: Ballot,
-    pub(crate) value: Value,
+    pub(crate) command: C,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -74,9 +92,21 @@ pub struct AckAccept {
     pub(crate) ballot: Ballot,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Learn {
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct Learn<C: CommandTrait> {
     pub(crate) sender: SenderId,
     pub(crate) ballot: Ballot,
-    pub(crate) value: Value,
+    pub(crate) command: C,
+}
+impl<C> Debug for Learn<C>
+where
+    C: CommandTrait,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Learn")
+            .field("sender", &self.sender)
+            .field("ballot", &self.ballot)
+            .field("command", &self.command)
+            .finish()
+    }
 }
