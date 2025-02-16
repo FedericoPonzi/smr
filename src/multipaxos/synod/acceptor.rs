@@ -26,10 +26,6 @@ impl<C> Acceptor<C>
 where
     C: CommandTrait,
 {
-    fn is_safe_to_join_ballot(&self, ballot: Ballot) -> bool {
-        self.max_ballot < ballot
-    }
-
     pub fn new(my_id: SenderId) -> Self {
         Acceptor {
             max_ballot: 0,
@@ -39,7 +35,8 @@ where
     }
 
     pub fn handle_prepare(&mut self, p: Prepare) -> Option<Promise<C>> {
-        if self.is_safe_to_join_ballot(p.ballot) {
+        let is_safe_to_join_ballot = self.max_ballot < p.ballot;
+        if is_safe_to_join_ballot {
             self.max_ballot = p.ballot;
             Some(Promise {
                 sender: self.my_id,
@@ -51,8 +48,8 @@ where
     }
 
     pub fn handle_accept(&mut self, a: Accept<C>) -> Option<AckAccept> {
-        if a.ballot >= self.max_ballot {
-            self.max_ballot = a.ballot;
+        if a.ballot == self.max_ballot {
+            // TODO: strict equality or >=?
             self.max_accepted = Some(MaxAcceptedProposal {
                 ballot: a.ballot,
                 command: a.command,
@@ -70,7 +67,13 @@ where
 #[cfg(test)]
 mod test {
     use crate::multipaxos::{Accept, Acceptor, Prepare};
+    /*
+               TODO:
+        * A ballot with max_ballot + 1 should succeed.
+        * A ballot equal to max_ballot should fail (in handle_prepare).
+        * Ensure that max_accepted does not change if an accept is rejected.
 
+             */
     #[test]
     fn test_acceptor() {
         let mut acceptor = Acceptor::new(0);

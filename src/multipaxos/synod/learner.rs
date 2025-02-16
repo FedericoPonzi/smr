@@ -2,11 +2,12 @@
 /// the learner should be able to handle different learn messages from different ballots.
 /// It should stop caring about messages as soon as it has seen a quorum size of learn messages.
 ///
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
 
 use log::debug;
 
-use crate::multipaxos::Learn;
+use crate::multipaxos::{Learn, MessageKind};
 use crate::CommandTrait;
 
 #[derive(Debug, Clone)]
@@ -17,6 +18,7 @@ where
     value: Option<C>,
     /// how many voters have voted for this value
     voters: HashSet<u32>,
+    votes: HashMap<C, u32>, // Tracks which command has how many votes
     ballot: u32,
     pub quorum_size: u32,
 }
@@ -29,6 +31,7 @@ where
         Self {
             value: None,
             voters: Default::default(),
+            votes: Default::default(),
             quorum_size,
             ballot: 0,
         }
@@ -36,14 +39,17 @@ where
     pub fn is_value_learned(&self) -> bool {
         self.value.is_some()
     }
-    pub fn handle_learn(&mut self, learn_message: Learn<C>) -> anyhow::Result<()> {
+    pub fn handle_learn(
+        &mut self,
+        learn_message: Learn<C>,
+    ) -> anyhow::Result<Option<MessageKind<C>>> {
         if self.is_value_learned() {
             debug!(
                 "Received learn message, but value is already learned. Msg: {:?}",
                 learn_message
             );
             // We're done
-            return Ok(());
+            return Ok(None);
         }
         if learn_message.ballot > self.ballot {
             debug!(
@@ -53,16 +59,42 @@ where
             );
             self.ballot = learn_message.ballot;
             self.voters.clear();
+            self.votes.clear();
+            self.value = None; // Reset learned value for the new ballot
         }
+
+        if learn_message.ballot == self.ballot && self.voters.contains(&learn_message.sender) {
+            debug!(
+                "Ignoring duplicate learn message from sender {:?}",
+                learn_message.sender
+            );
+            return Ok(None);
+        }
+
         self.voters.insert(learn_message.sender);
+
+        let votes = self
+            .votes
+            .entry(learn_message.command.clone())
+            .or_insert_with(|| 0);
+        *votes += 1;
+        debug!(
+            "Learn message received: {:?}, votes: {}",
+            learn_message, votes
+        );
+
         // if we have a quorum, the value is learnt
-        if self.voters.len() >= self.quorum_size as usize {
-            self.value = Some(learn_message.command);
-            debug!("Value was learned!voters: {:?}", self.voters);
+        if *votes >= self.quorum_size {
+            self.value = Some(learn_message.command.clone());
+            debug!("Value was learned! voters: {:?}", self.voters);
             // clenaup some memory
             self.voters.clear();
+            self.votes.clear();
+            return Ok(Some(MessageKind::LearnedCommand {
+                cmd: learn_message.command,
+            }));
         }
-        Ok(())
+        Ok(None)
     }
     pub fn value(&self) -> Option<C> {
         self.value.clone()
@@ -150,6 +182,34 @@ mod tests {
             ballot: 3,
         })?;
         assert_eq!(learner.value(), Some(2));
+        Ok(())
+    }
+
+    #[test]
+    fn test_learner_conflicting_values_same_ballot() -> anyhow::Result<()> {
+        let mut learner = Learner::new(2);
+        learner.handle_learn(Learn {
+            command: 1,
+            sender: 1,
+            ballot: 1,
+        })?;
+        learner.handle_learn(Learn {
+            command: 2, // Conflicting value!
+            sender: 2,
+            ballot: 1,
+        })?;
+        assert!(
+            learner.value().is_none(),
+            "Value should not be learned yet: {:?}",
+            learner.value()
+        ); // No value should be learned yet
+
+        learner.handle_learn(Learn {
+            command: 1,
+            sender: 3,
+            ballot: 1,
+        })?;
+        assert_eq!(learner.value(), Some(1)); // 1 wins with quorum
         Ok(())
     }
 }

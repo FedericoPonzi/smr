@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::fmt::Debug;
 
-use log::__private_api::Value;
 use log::debug;
 
 use crate::multipaxos::{
@@ -77,16 +76,24 @@ where
         self.state.promises += 1;
         if self.state.promises >= self.quorum_size {
             println!("Proposer has reached the quorum of promises.");
+            let chosen_value = self
+                .state
+                .max_accepted_proposals
+                .iter()
+                .max_by_key(|p| p.ballot)
+                .map(|p| p.command.clone())
+                .unwrap_or_else(|| self.state.value.clone());
+
             (
                 Some(Accept {
                     sender: self.proposer_id,
                     ballot: self.ballot,
-                    command: self.state.value.clone(),
+                    command: chosen_value.clone(),
                 }),
                 InnerState::Accepting(StateWrapper {
                     state: AcceptingState {
                         accepts: 0,
-                        value: self.state.value.clone(),
+                        value: chosen_value,
                     },
                     ballot: self.ballot,
                     proposer_id: self.proposer_id,
@@ -229,14 +236,14 @@ mod tests {
     #[test]
     fn test_proposer() {
         let mut proposer = Proposer::new(1, 2);
-        let prepare = proposer.new_prepare(123);
-        let mut promise = Promise {
+        let _prepare = proposer.new_prepare(123);
+        let promise = Promise {
             sender: 2,
             max_accepted: None,
         };
         let resp = proposer.handle_message(promise.clone());
         assert!(resp.is_none());
-        let mut ballot = 0;
+        let ballot;
         if let InnerState::Proposal(state_wrapper) = &proposer.inner_state {
             assert_eq!(state_wrapper.state.promises, 1);
             assert!(state_wrapper.state.max_accepted_proposals.is_empty());
@@ -257,5 +264,59 @@ mod tests {
         let resp = proposer.handle_message(AckAccept { sender: 3, ballot });
         assert!(resp.is_some_and(|t| matches!(t, MessageKind::LearnMsg(_))));
         assert!(matches!(proposer.inner_state, InnerState::Learning(_)));
+    }
+
+    #[test]
+    fn test_proposer_selects_highest_ballot_value() {
+        let mut proposer = Proposer::new(1, 2);
+
+        // Proposer starts a new proposal
+        let _ = proposer.new_prepare(100);
+
+        // First promise with no accepted value
+        let resp = proposer.handle_message(Promise {
+            sender: 2,
+            max_accepted: Some(MaxAcceptedProposal {
+                ballot: 5,
+                command: 200,
+            }),
+        });
+        assert!(resp.is_none());
+
+        // Second promise with a higher ballot value
+        let resp = proposer.handle_message(Promise {
+            sender: 3,
+            max_accepted: Some(MaxAcceptedProposal {
+                ballot: 10, // Highest ballot seen
+                command: 300,
+            }),
+        });
+
+        // Expect an Accept message with value 300 (from highest ballot)
+        assert!(
+            matches!(resp, Some(MessageKind::AcceptMsg(Accept { command, .. })) if command == 300)
+        );
+    }
+
+    #[test]
+    fn test_proposer_increments_ballot() {
+        let mut proposer = Proposer::new(1, 2);
+
+        let prepare1 = proposer.new_prepare(100);
+        if let MessageKind::PrepareMsg(prep) = prepare1 {
+            let first_ballot = prep.ballot;
+
+            let prepare2 = proposer.new_prepare(200);
+            if let MessageKind::PrepareMsg(prep) = prepare2 {
+                let second_ballot = prep.ballot;
+
+                // Ensure ballot is increasing
+                assert!(second_ballot > first_ballot);
+            } else {
+                panic!("Second prepare message is not of type PrepareMsg");
+            }
+        } else {
+            panic!("First prepare message is not of type PrepareMsg");
+        }
     }
 }

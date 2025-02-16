@@ -1,27 +1,51 @@
-use std::fmt::{Debug, Formatter};
-
 use crate::multipaxos::{Ballot, MaxAcceptedProposal};
 use crate::CommandTrait;
+use serde::{Deserialize, Serialize};
+use std::fmt::{Debug, Formatter};
 
 pub type SenderId = u32;
 
-pub struct Message<C>
+#[derive(Serialize, Deserialize)]
+pub struct Message<T>
 where
-    C: CommandTrait,
+    T: CommandTrait,
 {
     // TODO: remove sender_id from inside the message kinds.
     sender_id: SenderId,
-    msg: MessageKind<C>,
+    paxos_instance: u64,
+    msg: MessageKind<T>,
+}
+impl<T> Message<T>
+where
+    T: CommandTrait,
+{
+    pub fn new(sender_id: SenderId, msg: MessageKind<T>, paxos_instance: u64) -> Self {
+        Message {
+            sender_id,
+            msg,
+            paxos_instance,
+        }
+    }
+    pub fn instance_id(&self) -> u64 {
+        self.paxos_instance
+    }
+    pub fn kind(self) -> MessageKind<T> {
+        self.msg
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum MessageKind<C: CommandTrait> {
-    RequestCommandToLeader(C),
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum MessageKind<T>
+where
+    T: CommandTrait,
+{
+    RequestCommandToLeader(T),
     PrepareMsg(Prepare),
-    PromiseMsg(Promise<C>),
-    AcceptMsg(Accept<C>),
+    PromiseMsg(Promise<T>),
+    AcceptMsg(Accept<T>),
     AckAcceptMsg(AckAccept),
-    LearnMsg(Learn<C>),
+    LearnMsg(Learn<T>),
+    LearnedCommand { cmd: T },
 }
 
 impl<C> From<Prepare> for MessageKind<C>
@@ -63,14 +87,14 @@ impl<C: CommandTrait> From<Learn<C>> for MessageKind<C> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Prepare {
     // Not needed, keep around for now just todebug:
     pub sender: SenderId,
     pub(crate) ballot: Ballot,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Promise<C>
 where
     C: CommandTrait,
@@ -79,20 +103,20 @@ where
     pub(crate) max_accepted: Option<MaxAcceptedProposal<C>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Accept<C: CommandTrait> {
     pub sender: SenderId,
     pub(crate) ballot: Ballot,
     pub(crate) command: C,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AckAccept {
     pub sender: SenderId,
     pub(crate) ballot: Ballot,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Learn<C: CommandTrait> {
     pub(crate) sender: SenderId,
     pub(crate) ballot: Ballot,

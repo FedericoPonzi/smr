@@ -2,6 +2,7 @@ pub use acceptor::Acceptor;
 pub use learner::Learner;
 pub use messages::*;
 pub use proposer::Proposer;
+use serde::{Deserialize, Serialize};
 
 use crate::multipaxos::Ballot;
 use crate::CommandTrait;
@@ -11,7 +12,7 @@ mod learner;
 mod messages;
 mod proposer;
 
-#[derive(Debug, Clone, Ord, Eq, PartialOrd, PartialEq, Hash)]
+#[derive(Debug, Clone, Ord, Eq, PartialOrd, PartialEq, Hash, Deserialize, Serialize)]
 pub struct MaxAcceptedProposal<C: CommandTrait> {
     pub ballot: Ballot,
     pub command: C,
@@ -23,7 +24,7 @@ where
     C: CommandTrait,
 {
     acceptor: Acceptor<C>,
-    proposer: Proposer<C>,
+    pub(crate) proposer: Proposer<C>,
     learner: Learner<C>,
     quorum_size: u32,
 }
@@ -32,11 +33,10 @@ impl<C> PaxosInstance<C>
 where
     C: CommandTrait,
 {
-    pub fn new(quorum_size: u32) -> Self {
+    pub fn new(node_id: u32, quorum_size: u32) -> Self {
         assert!(quorum_size >= 2);
-        let my_id = 1;
-        let acceptor = Acceptor::new(my_id);
-        let proposer = Proposer::new(my_id, quorum_size);
+        let acceptor = Acceptor::new(node_id);
+        let proposer = Proposer::new(node_id, quorum_size);
         let learner = Learner::new(quorum_size);
         Self {
             acceptor,
@@ -52,32 +52,24 @@ where
         C: CommandTrait,
     {
         let message = message.into();
-        match message.clone() {
+        Ok(match message.clone() {
             MessageKind::PrepareMsg(prepare) => {
-                Ok(self.acceptor.handle_prepare(prepare).map(Into::into))
+                self.acceptor.handle_prepare(prepare).map(Into::into)
             }
-            MessageKind::PromiseMsg(promise) => {
-                let resp = self
-                    .proposer
-                    .handle_message(MessageKind::PromiseMsg(promise));
-                Ok(resp)
-            }
-            MessageKind::AcceptMsg(accept) => {
-                let resp = self.acceptor.handle_accept(accept);
-                Ok(resp.map(Into::into))
-            }
+            MessageKind::PromiseMsg(promise) => self
+                .proposer
+                .handle_message(MessageKind::PromiseMsg(promise)),
+            MessageKind::AcceptMsg(accept) => self.acceptor.handle_accept(accept).map(Into::into),
             MessageKind::LearnMsg(learn) => {
                 self.learner.handle_learn(learn)?;
-                Ok(None)
+                None
             }
             MessageKind::AckAcceptMsg(msg) => {
-                Ok(self.proposer.handle_message(MessageKind::AckAcceptMsg(msg)))
+                self.proposer.handle_message(MessageKind::AckAcceptMsg(msg))
             }
-            MessageKind::RequestCommandToLeader(_cmd) => {
-                let resp = self.proposer.handle_message(message);
-                Ok(resp)
-            }
-        }
+            MessageKind::RequestCommandToLeader(_cmd) => self.proposer.handle_message(message),
+            _ => Some(message),
+        })
     }
     pub fn get_value(&self) -> Option<C> {
         self.learner.value()
@@ -92,7 +84,7 @@ mod tests {
 
     #[test]
     pub fn test_paxosinstance_simple() -> anyhow::Result<()> {
-        let mut paxos: PaxosInstance<u32> = PaxosInstance::new(2);
+        let mut paxos: PaxosInstance<u32> = PaxosInstance::new(1, 2);
         let to = 5;
         for i in 1..=to {
             let promise: MessageKind<u32> = paxos
