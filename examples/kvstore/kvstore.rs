@@ -54,9 +54,7 @@ impl KeyValueStore {
 impl Default for KeyValueStore {
     fn default() -> KeyValueStore {
         KeyValueStore {
-            inner: Arc::new(RwLock::new(Inner {
-                values: HashMap::default(),
-            })),
+            inner: Arc::new(RwLock::new(HashMap::default())),
         }
     }
 }

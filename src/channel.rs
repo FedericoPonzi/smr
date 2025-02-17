@@ -104,33 +104,54 @@ where
                 match listener.accept().await {
                     Ok((stream, addr)) => {
                         debug!("Node {} accepted connection from {}", id, addr);
-
-                        // Disable Nagle's algorithm (set TCP_NODELAY)
-                        stream.set_nodelay(true).unwrap();
-
-                        let (mut reader, writer) = stream.into_split();
-                        debug!("Node {} reading id", id);
-                        let peer_id = match reader.read_u32().await {
-                            Ok(peer_id) => peer_id,
-                            Err(_) => {
-                                error!("Node {} failed to read peer ID from {}", id, addr);
-                                continue;
-                            }
-                        };
-                        debug!(
-                            "Node {} received id: {}, already exists? {} ",
-                            id,
-                            peer_id,
-                            connections.lock().await.contains_key(&peer_id)
-                        );
-                        connections.lock().await.insert(peer_id, writer);
-                        Self::start_reading(id, sender.clone(), peer_id, reader).await;
-                        debug!("Node {} added {} to connection map", id, peer_id);
+                        let connections_cl = connections.clone();
+                        let sender_cl = sender.clone();
+                        // spawn a new task for each accept, so we can accept more connections
+                        tokio::spawn(async move {
+                            Self::handle_connection(
+                                stream,
+                                id,
+                                sender_cl,
+                                connections_cl.clone(),
+                                addr,
+                            )
+                            .await;
+                        });
                     }
                     Err(e) => error!("Error accepting connection: {:?}", e),
                 }
             }
         });
+    }
+    async fn handle_connection(
+        stream: TcpStream,
+        id: u32,
+        sender: mpsc::Sender<T>,
+        connections: Connections,
+        addr: SocketAddr,
+    ) {
+        // Disable Nagle's algorithm (set TCP_NODELAY)
+        stream.set_nodelay(true).unwrap();
+
+        let (mut reader, writer) = stream.into_split();
+        debug!("Node {} reading id", id);
+        let peer_id = match reader.read_u32().await {
+            Ok(peer_id) => peer_id,
+            Err(_) => {
+                error!("Node {} failed to read peer ID from {}", id, addr);
+                return;
+            }
+        };
+        debug!(
+            "Node {} received id: {}, already exists? {} ",
+            id,
+            peer_id,
+            connections.lock().await.contains_key(&peer_id)
+        );
+        debug!("{id} Adding {peer_id} to the conncetions list");
+        connections.lock().await.insert(peer_id, writer);
+        Self::start_reading(id, sender.clone(), peer_id, reader).await;
+        debug!("Node {} added {} to connection map", id, peer_id);
     }
 
     /// Initiates outgoing connections to higher ID nodes or wraps around to the lowest.
@@ -185,6 +206,7 @@ where
     async fn send_id(id: u32, peer_id: u32, conn: Connections, mut writer: OwnedWriteHalf) {
         debug!("Node {} sending id to {}", id, peer_id);
         if writer.write_u32(id).await.is_ok() {
+            debug!("Node {} sent id to {}", id, peer_id);
             conn.lock().await.insert(peer_id, writer);
         } else {
             error!("Node {} failed to send its id to {}", id, peer_id);
