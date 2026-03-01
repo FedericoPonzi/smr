@@ -34,7 +34,11 @@ where
     C: CommandTrait,
 {
     pub fn new(node_id: u32, quorum_size: u32) -> Self {
-        assert!(quorum_size >= 2);
+        assert!(
+            quorum_size >= 2,
+            "quorum_size must be >= 2, got: {}",
+            quorum_size
+        );
         let acceptor = Acceptor::new(node_id);
         let proposer = Proposer::new(node_id, quorum_size);
         let learner = Learner::new(quorum_size);

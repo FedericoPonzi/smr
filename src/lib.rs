@@ -6,17 +6,17 @@
 //! - Network transport layer for communication between nodes
 //! - Runtime for managing the replication protocol
 
-use crate::multipaxos::{Message, MessageKind, MultiPaxosNode};
-use log::info;
+use crate::multipaxos::{Message, MultiPaxosNode};
 pub use multipaxos::PaxosInstance;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot};
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::task::JoinHandle;
+use tracing::debug;
 
 pub mod channel;
 pub mod multipaxos;
@@ -26,7 +26,7 @@ pub use channel::TcpChannel;
 
 pub type Result<T> = anyhow::Result<T>;
 
-pub trait StateMachine {
+pub trait StateMachine: Sync + Send {
     type Command: SerializableCommand;
     type Output: Clone + Send;
 
@@ -48,13 +48,17 @@ where
     fn send(&mut self, message: C) -> Result<()>;
 }
 
-pub trait StateMachineReplicationAlgorithm<T>
+pub trait StateMachineReplicationAlgorithm<S>
 where
-    T: SerializableCommand,
+    S: StateMachine,
 {
     type SMRMessage;
-    fn propose(&mut self, command: T) -> Result<Vec<Message<T>>>;
-    fn handle_message(&mut self, message: Self::SMRMessage) -> Result<Vec<Message<T>>>;
+    fn propose(
+        &mut self,
+        command: S::Command,
+    ) -> Result<(Vec<Message<S::Command>>, oneshot::Receiver<S::Output>)>;
+    fn handle_message(&mut self, message: Self::SMRMessage) -> Result<Vec<Message<S::Command>>>;
+    fn get_commit_id(&mut self, id: u64) -> Option<S::Command>;
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +95,7 @@ impl SmrConfig {
     ) -> Result<SmrConfig> {
         Ok(SmrConfig {
             node_id,
-            bind_address: bind_address.unwrap(),
+            bind_address: bind_address.unwrap_or("127.0.0.1".to_owned()),
             total_nodes: other_nodes.len() as u32,
             other_nodes,
         })
@@ -99,176 +103,134 @@ impl SmrConfig {
 }
 
 // TODO: revisit. Implement them on MaxAcceptedResponse
-pub trait CommandTrait: Clone + Debug + Eq + PartialEq + Hash {}
+pub trait CommandTrait: Clone + Debug + Eq + PartialEq + Hash + Send + Sync {}
 
-impl<T> CommandTrait for T where T: Clone + Debug + Eq + PartialEq + Hash + Send {}
+impl<T> CommandTrait for T where T: Clone + Debug + Eq + PartialEq + Hash + Send + Sync {}
 
 // Define a helper trait
-pub trait SerializableCommand: CommandTrait + Serialize + for<'a> Deserialize<'a> {}
+pub trait SerializableCommand: CommandTrait + Serialize + Debug + for<'a> Deserialize<'a> {}
 // Implement it automatically for all types satisfying the bounds
 impl<T> SerializableCommand for T where T: CommandTrait + Serialize + for<'a> Deserialize<'a> {}
 
-pub enum SmrMessage<S>
-where
-    S: StateMachine,
-{
-    PaxosMessage {
-        message: Message<S::Command>,
-    },
-    ClientRequest {
-        cmd: S::Command,
-        sender: oneshot::Sender<<S as StateMachine>::Output>,
-    },
-}
-
 pub struct SmrRuntime<S: StateMachine + 'static> {
-    config: SmrConfig,
-    algorithm: MultiPaxosNode<S::Command>,
-    state_machine: S,
-    channel: mpsc::Sender<SmrMessage<S>>,
-    incoming_messages: mpsc::Receiver<SmrMessage<S>>,
     pending_proposals: HashMap<u64, (S::Command, Option<oneshot::Sender<S::Output>>)>,
+    // this is just a counter.
     next_proposal_id: u64,
-    other_node_streams: HashMap<u32, mpsc::Sender<Message<S::Command>>>,
+    inner: Arc<Mutex<SmrRuntimeInner<S>>>,
 }
 
 impl<S> SmrRuntime<S>
 where
-    S: StateMachine,
+    S: StateMachine + Send,
 {
-    pub fn new(config: SmrConfig, state_machine: S, node_id: u32) -> Result<Self> {
-        let algorithm = MultiPaxosNode::new(node_id, config.clone());
-        let (tx, rx) = mpsc::channel(1024); // Single channel!
-        Ok(SmrRuntime {
+    pub fn new(config: SmrConfig, state_machine: S) -> Result<Self> {
+        let inner = Arc::new(Mutex::new(SmrRuntimeInner::new(config, state_machine)?));
+        Ok(Self {
+            inner,
+            pending_proposals: HashMap::new(),
+            next_proposal_id: 0,
+        })
+    }
+    pub async fn propose(&mut self, v: S::Command) -> Result<oneshot::Receiver<S::Output>> {
+        let mut inner = self.inner.lock().await;
+        let id = self.next_proposal_id;
+        self.next_proposal_id += 1;
+        self.pending_proposals.insert(id, (v.clone(), None));
+        inner.propose(v).await
+    }
+}
+
+struct SmrRuntimeInner<S: StateMachine> {
+    config: SmrConfig,
+    algorithm: Arc<Mutex<MultiPaxosNode<S>>>,
+    state_machine: Arc<RwLock<S>>,
+    last_applied_command_id: Arc<RwLock<u64>>,
+    channel: mpsc::Sender<Message<S::Command>>,
+    ch_handle: JoinHandle<()>,
+}
+impl<S> SmrRuntimeInner<S>
+where
+    S: StateMachine + 'static,
+{
+    pub fn new(config: SmrConfig, state_machine: S) -> Result<Self>
+    where
+        <S as StateMachine>::Command: 'static,
+    {
+        debug!("Initializing SmrRuntimeInner");
+        let algorithm = Arc::new(Mutex::new(MultiPaxosNode::new(config.clone())));
+        let channel: TcpChannel<Message<S::Command>> = TcpChannel::new(
+            config.node_id,
+            config.bind_address.parse()?,
+            config
+                .other_nodes
+                .iter()
+                .map(|n| {
+                    (
+                        n.split(":").collect::<Vec<&str>>()[1].parse().unwrap(),
+                        n.clone().parse().unwrap(),
+                    )
+                })
+                .collect(),
+        );
+        let state_machine = Arc::new(RwLock::new(state_machine));
+        let sender = channel.sender.clone();
+        let algorithm_cl = Arc::clone(&algorithm); // Clone Arc for async task
+        let last_applied_command_id = Arc::new(RwLock::new(0u64));
+        let last_applied_command_id_cl = last_applied_command_id.clone();
+        let state_machine_cl = state_machine.clone();
+
+        let handle = tokio::spawn(async {
+            Self::background(
+                channel,
+                algorithm_cl,
+                last_applied_command_id_cl,
+                state_machine_cl,
+            )
+            .await
+        });
+
+        Ok(Self {
             config,
             algorithm,
             state_machine,
-            channel: tx,
-            incoming_messages: rx,
-            pending_proposals: HashMap::new(),
-            next_proposal_id: 0,
-            other_node_streams: HashMap::new(),
+            last_applied_command_id,
+            channel: sender,
+            ch_handle: handle,
         })
     }
-
-    pub async fn run(&mut self) -> Result<()>
-    where
-        <S as StateMachine>::Command: Send, // Add trait bounds
-    {
-        let listener = TcpListener::bind(self.config.bind_address.clone()).await?;
-        tokio::spawn(async move {
-            loop {
-                let (stream, _) = listener.accept().await.unwrap();
-                let mut stream = stream; // Make stream mutable
-                loop {
-                    let mut buf = Vec::new(); // Create a buffer to read into
-                    match stream.read_buf(&mut buf).await {
-                        Ok(0) => break, // Connection closed
-                        Ok(_) => {
-                            // Deserialize the message directly from the buffer
-                            let message: Message<S::Command> =
-                                serde_json::from_slice(&buf).unwrap(); // Or your preferred deserialization method
-                                                                       //tx.send(SmrMessage::PaxosMessage { message }).await.unwrap();
-                                                                       // Send the message
-                        }
-                        Err(e) => {
-                            eprintln!("Error reading from stream: {}", e);
-                            break;
-                        }
-                    }
-                }
+    async fn background(
+        mut channel: TcpChannel<Message<S::Command>>,
+        algorithm: Arc<Mutex<MultiPaxosNode<S>>>,
+        last_applied_command_id: Arc<RwLock<u64>>,
+        state_machine: Arc<RwLock<S>>,
+    ) {
+        while let Some(msg) = channel.receive().await {
+            let mut algorithm_lc = algorithm.lock().await;
+            let responses = algorithm_lc.handle_message(msg).unwrap();
+            for response in responses {
+                channel.send(response).await;
             }
-        });
-        info!("Listening on {}", self.config.bind_address);
-        let tx = self.channel.clone(); // Clone the sender
-                                       // 1. Establish connections to other nodes
+            let last_applied_commit = last_applied_command_id.write().await;
 
-        // inputs sides to send messages to tasks that forward to other nodes
-        let mut other_node_streams: HashMap<u32, mpsc::Sender<Message<S::Command>>> =
-            HashMap::new();
-
-        for node_id in self.config.other_nodes.clone() {
-            // Assuming port offset is 8080
-            let node_id = node_id.parse::<u32>().unwrap();
-            info!("Connecting to node {} at localhost:{}", node_id, node_id);
-            let mut stream = TcpStream::connect(format!("localhost:{}", node_id))
-                .await
-                .unwrap();
-            let (tx, mut rx) = mpsc::channel(1024);
-            other_node_streams.insert(node_id, tx); // Store the sender
-
-            // Spawn a task to receive messages from this node
-            let incoming_messages = self.channel.clone();
-            tokio::spawn(async move {
-                while let Some(msg) = rx.recv().await {
-                    let buf = serde_json::to_vec(&msg).unwrap();
-                    //incoming_messages.send(buf).await.unwrap();
-                }
-            });
-
-            // Spawn a task to send messages to this node
-            /*tokio::spawn(async move {
-                while let Some(msg) = rx.recv().await {
-                    let bytes = serde_json::to_vec(&msg).unwrap();
-                    stream.write_all(&bytes).await.unwrap();
-                }
-            });*/
+            if let Some(command) = algorithm_lc.get_commit_id(*last_applied_commit) {
+                let mut sm = state_machine.write().await;
+                let res = sm.apply(command);
+                //todo: something wrong, would need to forward result to the listening client
+            }
         }
-
-        // Main loop: process messages from the single channel
-        while let Some(msg) = self.incoming_messages.recv().await {
-            /* match msg {
-                SmrMessage::PaxosMessage { message } => {
-                    let outgoing_messages = self.algorithm.handle_message(message)?; // Pass to Paxos
-                    for msg in outgoing_messages {
-                        match msg.kind() {
-                            MessageKind::LearnedCommand { cmd } => {
-                                let output = self.state_machine.apply(cmd.clone()).unwrap();
-
-                                // Send the result back to the client
-                                if let Some((_, Some(sender))) =
-                                    self.pending_proposals.remove(&message.instance_id())
-                                {
-                                    // Use instance_id
-                                    sender.send(output).unwrap_or_else(|_| {
-                                        // Handle send error if the receiver has dropped
-                                        eprintln!(
-                                            "Failed to send result to client. Receiver dropped."
-                                        );
-                                    });
-                                }
-                            }
-                            _ => {
-                                // Broadcast initial Paxos messages to all other nodes
-                                for addr in &self.config.other_nodes {
-                                    // Serialize the message
-                                    let bytes = serde_json::to_vec(&msg).unwrap();
-                                    self.channel
-                                        .send(SmrMessage::PaxosMessage { message: msg })
-                                        .await
-                                        .unwrap();
-                                }
-                            }
-                        }
-                    }
-                }
-                SmrMessage::ClientRequest { cmd, sender } => {
-                    let proposal_id = self.next_proposal_id;
-                    self.next_proposal_id += 1;
-                    self.pending_proposals
-                        .insert(proposal_id, (cmd.clone(), Some(sender))); // Store sender with proposal ID
-
-                    let outgoing_messages = self.algorithm.propose(cmd)?; // Propose through MultiPaxos
-
-                    for msg in outgoing_messages {
-                        self.channel
-                            .send(SmrMessage::PaxosMessage { message: msg })
-                            .await
-                            .unwrap();
-                    }
-                }
-            }*/
+    }
+    pub async fn propose(&mut self, cmd: S::Command) -> Result<oneshot::Receiver<S::Output>>
+    where
+        <S as StateMachine>::Command: 'static,
+    {
+        let mut alg = self.algorithm.lock().await;
+        // TODO: this might not be enough, as a proposal might not go through in the current round.
+        // but it's a start. ideally, this adds to a proposal list, and another thread
+        // continuosly tries to push proposals
+        let (ret, resp) = alg.propose(cmd)?;
+        for m in ret {
+            self.channel.send(m).await?;
         }
-        Ok(())
+        Ok(resp)
     }
 }

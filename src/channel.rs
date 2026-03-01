@@ -23,7 +23,7 @@
 //! connections in a **deterministic way**, reducing redundant connection attempts.
 
 use crate::multipaxos::Message;
-use crate::{Channel, Result, SmrMessage};
+use crate::{Channel, Result};
 use log::warn;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -57,40 +57,38 @@ type Connections = Arc<Mutex<HashMap<u32, OwnedWriteHalf>>>;
 pub struct TcpChannel<T: Serialize + for<'a> Deserialize<'a> + Send + 'static> {
     id: u32,
     local_addr: SocketAddr,
-    peers: Vec<SocketAddr>,
+    peer_map: HashMap<u32, SocketAddr>,
     connections: Connections,
     // interface with internal runtime
-    sender: mpsc::Sender<T>,
-    receiver: mpsc::Receiver<T>,
+    pub sender: mpsc::Sender<T>,
+    pub receiver: mpsc::Receiver<T>,
 }
 
 impl<T> TcpChannel<T>
 where
     T: Serialize + for<'a> Deserialize<'a> + Send + Sync + 'static + Debug,
 {
-    pub async fn new(id: u32, local_addr: SocketAddr, peers: Vec<(u32, SocketAddr)>) -> Self {
+    pub fn new(id: u32, local_addr: SocketAddr, peers: Vec<(u32, SocketAddr)>) -> Self {
         let (tx, rx) = mpsc::channel(100);
         let connections = Arc::new(Mutex::new(HashMap::new()));
 
         let peer_map: HashMap<u32, SocketAddr> = peers.into_iter().collect();
 
-        let channel = Self {
+        Self {
             id,
             local_addr,
-            peers: peer_map.values().cloned().collect(),
+            peer_map,
             connections: connections.clone(),
-            sender: tx.clone(),
+            sender: tx,
             receiver: rx,
-        };
-
-        channel.start_listener(connections.clone()).await;
-        channel.initiate_connections(peer_map, connections).await;
-
-        channel
+        }
     }
-
+    pub async fn start(&self) {
+        self.start_listener().await;
+        self.initiate_connections().await;
+    }
     /// Starts listening for incoming connections.
-    async fn start_listener(&self, connections: Connections) {
+    async fn start_listener(&self) {
         let listener = TcpListener::bind(self.local_addr)
             .await
             .expect("Failed to bind socket");
@@ -98,7 +96,7 @@ where
 
         let id = self.id;
         let sender = self.sender.clone();
-
+        let connections = self.connections.clone();
         tokio::spawn(async move {
             loop {
                 match listener.accept().await {
@@ -155,12 +153,10 @@ where
     }
 
     /// Initiates outgoing connections to higher ID nodes or wraps around to the lowest.
-    async fn initiate_connections(
-        &self,
-        peer_map: HashMap<u32, SocketAddr>,
-        connections: Connections,
-    ) {
-        let mut targets: Vec<_> = peer_map
+    async fn initiate_connections(&self) {
+        let connections = self.connections.clone();
+        let targets: Vec<_> = self
+            .peer_map
             .clone()
             .into_iter()
             .filter(|(peer_id, _)| *peer_id > self.id)
@@ -313,17 +309,26 @@ where
     senders: Vec<Sender<C>>,
 }
 
-impl<C> SharedMemoryChannel<C>
+impl<C> Default for SharedMemoryChannel<C>
 where
     C: Serialize + for<'a> Deserialize<'a> + Clone,
 {
-    pub fn new() -> Self {
+    fn default() -> Self {
         Self {
             inner: Arc::new(std::sync::Mutex::new(Inner {
                 data: VecDeque::new(),
                 senders: Vec::new(),
             })),
         }
+    }
+}
+
+impl<C> SharedMemoryChannel<C>
+where
+    C: Serialize + for<'a> Deserialize<'a> + Clone,
+{
+    pub fn new() -> Self {
+        Self::default()
     }
     // Get a sender and receiver pair for a new endpoint
     pub fn get_ends(&self) -> (Sender<C>, Receiver<C>) {

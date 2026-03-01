@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::{sync::mpsc, time::timeout};
-use tracing::{debug, info};
+use tracing::info;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_channel_happy_path() {
@@ -20,9 +20,13 @@ async fn test_channel_happy_path() {
     let peers2 = vec![(1, addr1), (3, addr3)];
     let peers3 = vec![(1, addr1), (2, addr2)];
 
-    let mut channel1 = TcpChannel::new(1, addr1, peers1).await;
-    let mut channel2: TcpChannel<String> = TcpChannel::new(2, addr2, peers2).await;
-    let mut channel3: TcpChannel<String> = TcpChannel::new(3, addr3, peers3).await;
+    let mut channel1 = TcpChannel::new(1, addr1, peers1);
+    channel1.start().await;
+    let mut channel2: TcpChannel<String> = TcpChannel::new(2, addr2, peers2);
+    channel2.start().await;
+    let mut channel3: TcpChannel<String> = TcpChannel::new(3, addr3, peers3);
+    channel3.start().await;
+
     timeout(Duration::from_secs(3), async {
         loop {
             let connected1 = channel1.connected_peers().await;

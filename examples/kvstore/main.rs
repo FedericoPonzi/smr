@@ -1,17 +1,14 @@
 #[macro_use]
 extern crate rocket;
 
-use crate::kvstore::{Command, InnerStateMachine, KeyValueStore};
+use crate::kvstore::{InnerStateMachine, KeyValueStore};
 
 use rocket::http::Status;
 use rocket::response::status;
 use rocket::serde::json::Json;
 use rocket::yansi::Paint;
-use rocket::State;
+use rocket::{Config, State};
 use smr::{SmrConfig, SmrRuntime};
-use std::sync::Arc;
-use tokio::sync::oneshot;
-use tokio::sync::Mutex;
 
 mod kvstore;
 
@@ -48,22 +45,21 @@ fn config() -> anyhow::Result<smr::SmrConfig> {
 
     let bind_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ports[node_id as usize]);
 
-    let other_nodes: Vec<SocketAddr> = (0..3)
+    let other_nodes = (0..3)
         .filter(|&n| n != node_id)
         .map(|n| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ports[n as usize]))
+        .map(|a| a.to_string())
         .collect();
 
-    SmrConfig::new(node_id as u32, Some(bind_address), other_nodes) // Use bind_address
+    SmrConfig::new(node_id as u32, Some(bind_address.to_string()), other_nodes)
 }
 
 #[get("/<item_key>")]
 async fn get_item(
     item_key: &str,
-    state_kvstore: &State<Arc<Mutex<KeyValueStore>>>,
+    state_kvstore: &State<KeyValueStore>,
 ) -> Result<Json<String>, status::Custom<Json<String>>> {
-    let kvstore = state_kvstore.lock().await;
-    match kvstore.get(item_key).await {
-        // Use .await here as well
+    match state_kvstore.get(item_key).await {
         Ok(Some(value)) => Ok(Json(value)),
         Ok(None) => Err(status::Custom(
             Status::NotFound,
@@ -80,36 +76,15 @@ async fn get_item(
 async fn set_item(
     item_key: &str,
     item_value: &str,
-    state_kvstore: &State<Arc<Mutex<KeyValueStore>>>,
-    smr_runtime: &State<SmrRuntime<InnerStateMachine>>,
+    state_kvstore: &State<KeyValueStore>,
 ) -> Result<Status, status::Custom<Json<String>>> {
-    let cmd = Command::Set {
-        // Use the imported Command
-        key: item_key.to_string(),
-        value: item_value.to_string(),
-    };
-
-    let rx = smr_runtime.propose(cmd).await.map_err(|e| {
+    state_kvstore.set(item_key, item_value).await.map_err(|e| {
         status::Custom(
             Status::InternalServerError,
             Json(format!("Error proposing command: {}", e)),
         )
     })?;
-
-    let result = rx.await.map_err(|e| {
-        status::Custom(
-            Status::InternalServerError,
-            Json(format!("Error waiting for result: {}", e)),
-        )
-    })?;
-
-    match result {
-        Ok(_) => Ok(Status::Ok),
-        Err(err) => Err(status::Custom(
-            Status::InternalServerError,
-            Json(format!("Error setting key: {}", err)),
-        )),
-    }
+    Ok(Status::Ok)
 }
 
 #[get("/")]
@@ -120,20 +95,17 @@ fn index() -> &'static str {
 #[launch]
 async fn rocket() -> _ {
     let config = config().expect("Failed to load config");
-    let state_kvstore = Arc::new(Mutex::new(KeyValueStore::default())); // Initialize Arc<Mutex>
+    let nid = config.node_id as u16;
+    let smr_runtime = SmrRuntime::new(config, InnerStateMachine::new()).unwrap();
+    let state_kvstore = KeyValueStore::new(smr_runtime); // Initialize Arc<Mutex>
 
-    let smr_runtime = SmrRuntime::new(config, KeyValueStore::default())
-        .await
-        .expect("Failed to create SMR runtime");
-    let smr_runtime_state = State::new(smr_runtime);
+    let rocket_config = Config {
+        port: 8080 + nid,
+        address: "0.0.0.0".parse().unwrap(), // Bind to all network interfaces
+        ..Config::default()
+    };
 
-    let runtime_clone = smr_runtime_state.clone();
-    tokio::spawn(async move {
-        runtime_clone.run().await.unwrap();
-    });
-
-    rocket::build()
-        .manage(state_kvstore) // Manage the Arc<Mutex>
-        .manage(smr_runtime_state)
+    rocket::custom(rocket_config)
+        .manage(state_kvstore)
         .mount("/", routes![index, get_item, set_item])
 }

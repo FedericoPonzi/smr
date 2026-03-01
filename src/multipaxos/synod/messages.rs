@@ -5,7 +5,7 @@ use std::fmt::{Debug, Formatter};
 
 pub type SenderId = u32;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Message<T>
 where
     T: CommandTrait,

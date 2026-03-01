@@ -1,8 +1,8 @@
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
-use std::sync::RwLock;
+use smr::{SmrRuntime, StateMachine};
 use std::{collections::HashMap, sync::Arc};
-
-use smr::StateMachine;
+use tokio::sync::RwLock;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum Command {
@@ -15,12 +15,19 @@ pub struct InnerStateMachine {
     // TODO: adding persistence (e.g., sled) to survive restarts
     values: HashMap<String, String>,
 }
+impl InnerStateMachine {
+    pub fn new() -> Self {
+        Self {
+            values: HashMap::new(),
+        }
+    }
+}
 
 impl StateMachine for InnerStateMachine {
     type Command = Command; // Use the renamed Command
-    type Output = Result<Option<String>, String>;
+    type Output = Option<String>;
 
-    fn apply(&mut self, command: Self::Command) -> Self::Output {
+    fn apply(&mut self, command: Self::Command) -> smr::Result<Self::Output> {
         match command {
             Command::Get { key } => Ok(self.values.get(&key).cloned()),
             Command::Set { key, value } => {
@@ -33,28 +40,43 @@ impl StateMachine for InnerStateMachine {
 
 #[derive(Clone)]
 pub struct KeyValueStore {
-    inner: Arc<RwLock<InnerStateMachine>>,
+    inner: Arc<RwLock<SmrRuntime<InnerStateMachine>>>,
 }
 
 impl KeyValueStore {
+    pub fn new(runtime: SmrRuntime<InnerStateMachine>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(runtime)),
+        }
+    }
     pub(crate) async fn get(&self, key: &str) -> anyhow::Result<Option<String>> {
-        // Made async
-        let inner = self.inner.read().await; // Use .await
-        Ok(inner.values.get(key).cloned())
+        let command = Command::Get {
+            key: key.to_string(),
+        };
+        match self.propose(command).await {
+            Ok(v) => {
+                debug!("get result for key {:?} = {:?}", key, v);
+                Ok(v)
+            }
+            Err(err) => {
+                error!("get error: {:?}", err);
+                bail!(err);
+            }
+        }
     }
 
     pub(crate) async fn set(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        // Made async
-        let mut inner = self.inner.write().await; // Use .await
-        inner.values.insert(key.to_string(), value.to_string());
+        let command = Command::Set {
+            key: key.to_string(),
+            value: value.to_string(),
+        };
+        let _res = self.propose(command).await?;
         Ok(())
     }
-}
-
-impl Default for KeyValueStore {
-    fn default() -> KeyValueStore {
-        KeyValueStore {
-            inner: Arc::new(RwLock::new(HashMap::default())),
-        }
+    async fn propose(&self, command: Command) -> anyhow::Result<Option<String>> {
+        let mut lc = self.inner.write().await;
+        let rx = lc.propose(command).await?;
+        drop(lc);
+        Ok(rx.await?)
     }
 }
