@@ -58,7 +58,7 @@ where
         command: S::Command,
     ) -> Result<(Vec<Message<S::Command>>, oneshot::Receiver<S::Output>)>;
     fn handle_message(&mut self, message: Self::SMRMessage) -> Result<Vec<Message<S::Command>>>;
-    fn get_commit_id(&mut self, id: u64) -> Option<S::Command>;
+    fn get_commit_id(&mut self, id: u64) -> Option<(S::Command, Option<oneshot::Sender<S::Output>>)>;
 }
 
 #[derive(Debug, Clone)]
@@ -96,7 +96,7 @@ impl SmrConfig {
         Ok(SmrConfig {
             node_id,
             bind_address: bind_address.unwrap_or("127.0.0.1".to_owned()),
-            total_nodes: other_nodes.len() as u32,
+            total_nodes: other_nodes.len() as u32 + 1,
             other_nodes,
         })
     }
@@ -210,12 +210,16 @@ where
             for response in responses {
                 channel.send(response).await;
             }
-            let last_applied_commit = last_applied_command_id.write().await;
+            let mut last_applied_commit = last_applied_command_id.write().await;
 
-            if let Some(command) = algorithm_lc.get_commit_id(*last_applied_commit) {
+            while let Some((command, sender)) = algorithm_lc.get_commit_id(*last_applied_commit) {
                 let mut sm = state_machine.write().await;
-                let res = sm.apply(command);
-                //todo: something wrong, would need to forward result to the listening client
+                if let Ok(output) = sm.apply(command) {
+                    if let Some(sender) = sender {
+                        let _ = sender.send(output);
+                    }
+                }
+                *last_applied_commit += 1;
             }
         }
     }

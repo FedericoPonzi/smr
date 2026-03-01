@@ -20,6 +20,7 @@ where
 {
     config: SmrConfig,
     paxos_instances: HashMap<u64, PaxosInstance<S::Command>>,
+    pending_senders: HashMap<u64, oneshot::Sender<S::Output>>,
     next_instance_id: u64,
     id: u32,
 }
@@ -33,6 +34,7 @@ where
             id: config.node_id,
             config,
             paxos_instances: HashMap::new(),
+            pending_senders: HashMap::new(),
             next_instance_id: 0,
         }
     }
@@ -50,12 +52,13 @@ where
         let instance_id = self.next_instance_id;
         self.next_instance_id += 1;
 
-        let mut instance = PaxosInstance::new(self.id, self.config.total_nodes / 2 + 1);
+        let mut instance = PaxosInstance::new(self.id, self.config.total_nodes / 2 + 1, self.config.total_nodes);
         let prepare = instance.proposer.new_prepare(cmd.clone());
         let mut outgoing_messages = Vec::new();
         self.paxos_instances.insert(instance_id, instance);
         outgoing_messages.push(Message::new(self.id, prepare, instance_id));
         let (sender, receiver) = oneshot::channel();
+        self.pending_senders.insert(instance_id, sender);
         Ok((outgoing_messages, receiver))
     }
     fn handle_message(
@@ -68,7 +71,7 @@ where
         let paxos_instance = self
             .paxos_instances
             .entry(instance_id)
-            .or_insert(PaxosInstance::new(self.id, self.config.total_nodes / 2 + 1));
+            .or_insert(PaxosInstance::new(self.id, self.config.total_nodes / 2 + 1, self.config.total_nodes));
 
         if let Some(response) = paxos_instance.handle_message(paxos_msg.kind())? {
             outgoing_messages.push(Message::new(self.id, response, instance_id));
@@ -77,8 +80,10 @@ where
     }
 
     // actively push a value.
-    fn get_commit_id(&mut self, id: u64) -> Option<S::Command> {
+    fn get_commit_id(&mut self, id: u64) -> Option<(S::Command, Option<oneshot::Sender<S::Output>>)> {
         let instance = self.paxos_instances.get(&id)?;
-        instance.get_value()
+        let command = instance.get_value()?;
+        let sender = self.pending_senders.remove(&id);
+        Some((command, sender))
     }
 }

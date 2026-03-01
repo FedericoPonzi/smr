@@ -33,14 +33,14 @@ impl<C> PaxosInstance<C>
 where
     C: CommandTrait,
 {
-    pub fn new(node_id: u32, quorum_size: u32) -> Self {
+    pub fn new(node_id: u32, quorum_size: u32, total_nodes: u32) -> Self {
         assert!(
             quorum_size >= 2,
             "quorum_size must be >= 2, got: {}",
             quorum_size
         );
         let acceptor = Acceptor::new(node_id);
-        let proposer = Proposer::new(node_id, quorum_size);
+        let proposer = Proposer::new(node_id, quorum_size, total_nodes);
         let learner = Learner::new(quorum_size);
         Self {
             acceptor,
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     pub fn test_paxosinstance_simple() -> anyhow::Result<()> {
-        let mut paxos: PaxosInstance<u32> = PaxosInstance::new(1, 2);
+        let mut paxos: PaxosInstance<u32> = PaxosInstance::new(1, 2, 3);
         let to = 5;
         for i in 1..=to {
             let promise: MessageKind<u32> = paxos

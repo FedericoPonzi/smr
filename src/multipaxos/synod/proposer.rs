@@ -37,13 +37,14 @@ struct StateWrapper<S> {
     ballot: Ballot,
     proposer_id: u32,
     quorum_size: u32,
+    total_nodes: u32,
 }
 impl<S> StateWrapper<S> {
     pub(crate) fn new_prepare<C>(&mut self, value: C) -> (Option<MessageKind<C>>, InnerState<C>)
     where
         C: CommandTrait,
     {
-        self.ballot += self.proposer_id;
+        self.ballot = (self.ballot / self.total_nodes + 1) * self.total_nodes + self.proposer_id;
         (
             Some(MessageKind::PrepareMsg(Prepare {
                 sender: self.proposer_id,
@@ -58,6 +59,7 @@ impl<S> StateWrapper<S> {
                 ballot: self.ballot,
                 proposer_id: self.proposer_id,
                 quorum_size: self.quorum_size,
+                total_nodes: self.total_nodes,
             }),
         )
     }
@@ -98,6 +100,7 @@ where
                     ballot: self.ballot,
                     proposer_id: self.proposer_id,
                     quorum_size: self.quorum_size,
+                    total_nodes: self.total_nodes,
                 }),
             )
         } else {
@@ -131,6 +134,7 @@ where
                     ballot: self.ballot,
                     proposer_id: self.proposer_id,
                     quorum_size: self.quorum_size,
+                    total_nodes: self.total_nodes,
                 }),
             )
         } else {
@@ -202,13 +206,14 @@ impl<C> Proposer<C>
 where
     C: CommandTrait,
 {
-    pub fn new(proposer_id: u32, quorum_size: u32) -> Self {
+    pub fn new(proposer_id: u32, quorum_size: u32, total_nodes: u32) -> Self {
         Self {
             inner_state: InnerState::Initial(StateWrapper {
                 state: InitialState {},
                 ballot: proposer_id,
                 proposer_id,
                 quorum_size,
+                total_nodes,
             }),
         }
     }
@@ -235,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_proposer() {
-        let mut proposer = Proposer::new(1, 2);
+        let mut proposer = Proposer::new(1, 2, 3);
         let _prepare = proposer.new_prepare(123);
         let promise = Promise {
             sender: 2,
@@ -268,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_proposer_selects_highest_ballot_value() {
-        let mut proposer = Proposer::new(1, 2);
+        let mut proposer = Proposer::new(1, 2, 3);
 
         // Proposer starts a new proposal
         let _ = proposer.new_prepare(100);
@@ -300,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_proposer_increments_ballot() {
-        let mut proposer = Proposer::new(1, 2);
+        let mut proposer = Proposer::new(1, 2, 3);
 
         let prepare1 = proposer.new_prepare(100);
         if let MessageKind::PrepareMsg(prep) = prepare1 {
