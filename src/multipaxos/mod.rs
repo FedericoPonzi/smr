@@ -38,6 +38,25 @@ where
             next_instance_id: 0,
         }
     }
+
+    /// Process a message locally through the PaxosInstance and cascade any responses.
+    /// Each response is also added to outgoing messages for network broadcast.
+    fn self_deliver(
+        &mut self,
+        instance_id: u64,
+        initial_msg: MessageKind<S::Command>,
+        outgoing: &mut Vec<Message<S::Command>>,
+    ) -> Result<()> {
+        let mut to_deliver = vec![initial_msg];
+        while let Some(msg) = to_deliver.pop() {
+            let instance = self.paxos_instances.get_mut(&instance_id).unwrap();
+            if let Some(response) = instance.handle_message(msg)? {
+                outgoing.push(Message::new(self.id, response.clone(), instance_id));
+                to_deliver.push(response);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<S> StateMachineReplicationAlgorithm<S> for MultiPaxosNode<S>
@@ -54,9 +73,11 @@ where
 
         let mut instance = PaxosInstance::new(self.id, self.config.total_nodes / 2 + 1, self.config.total_nodes);
         let prepare = instance.proposer.new_prepare(cmd.clone());
-        let mut outgoing_messages = Vec::new();
         self.paxos_instances.insert(instance_id, instance);
-        outgoing_messages.push(Message::new(self.id, prepare, instance_id));
+
+        let mut outgoing_messages = vec![Message::new(self.id, prepare.clone(), instance_id)];
+        self.self_deliver(instance_id, prepare, &mut outgoing_messages)?;
+
         let (sender, receiver) = oneshot::channel();
         self.pending_senders.insert(instance_id, sender);
         Ok((outgoing_messages, receiver))
@@ -68,13 +89,18 @@ where
         let mut outgoing_messages = Vec::new();
 
         let instance_id = paxos_msg.instance_id();
-        let paxos_instance = self
-            .paxos_instances
+        self.paxos_instances
             .entry(instance_id)
             .or_insert(PaxosInstance::new(self.id, self.config.total_nodes / 2 + 1, self.config.total_nodes));
 
-        if let Some(response) = paxos_instance.handle_message(paxos_msg.kind())? {
-            outgoing_messages.push(Message::new(self.id, response, instance_id));
+        let response = {
+            let paxos_instance = self.paxos_instances.get_mut(&instance_id).unwrap();
+            paxos_instance.handle_message(paxos_msg.kind())?
+        };
+
+        if let Some(response) = response {
+            outgoing_messages.push(Message::new(self.id, response.clone(), instance_id));
+            self.self_deliver(instance_id, response, &mut outgoing_messages)?;
         }
         Ok(outgoing_messages)
     }

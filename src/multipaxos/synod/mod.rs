@@ -80,7 +80,7 @@ where
                     .handle_message(MessageKind::NackAcceptMsg(nack))
             }
             MessageKind::RequestCommandToLeader(_cmd) => self.proposer.handle_message(message),
-            _ => Some(message),
+            _ => None,
         })
     }
     pub fn get_value(&self) -> Option<C> {
