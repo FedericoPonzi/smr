@@ -3,9 +3,7 @@ use std::collections::HashMap;
 pub use synod::*;
 use tokio::sync::oneshot;
 
-use crate::{
-    Result, SerializableCommand, SmrConfig, StateMachine, StateMachineReplicationAlgorithm,
-};
+use crate::{Result, SmrConfig, StateMachine, StateMachineReplicationAlgorithm};
 
 mod synod;
 

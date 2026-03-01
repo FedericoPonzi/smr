@@ -109,9 +109,14 @@ async fn rocket() -> _ {
     let smr_runtime = SmrRuntime::new(config, InnerStateMachine::new()).unwrap();
     let state_kvstore = KeyValueStore::new(smr_runtime); // Initialize Arc<Mutex>
 
+    let http_port = std::env::var("ROCKET_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080 + nid);
+
     let rocket_config = Config {
-        port: 8080 + nid,
-        address: "0.0.0.0".parse().unwrap(), // Bind to all network interfaces
+        port: http_port,
+        address: "0.0.0.0".parse().unwrap(),
         ..Config::default()
     };
 
