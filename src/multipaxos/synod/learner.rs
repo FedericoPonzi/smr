@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 
-use log::debug;
+use log::{debug, info};
 
 use crate::multipaxos::{Learn, MessageKind};
 use crate::CommandTrait;
@@ -86,7 +86,10 @@ where
         // if we have a quorum, the value is learnt
         if *votes >= self.quorum_size {
             self.value = Some(learn_message.command.clone());
-            debug!("Value was learned! voters: {:?}", self.voters);
+            info!(
+                "Learner: value learned with {} votes! command={:?}",
+                votes, learn_message.command
+            );
             // clenaup some memory
             self.voters.clear();
             self.votes.clear();

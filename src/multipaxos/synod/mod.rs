@@ -2,6 +2,7 @@ pub use acceptor::Acceptor;
 pub use learner::Learner;
 pub use messages::*;
 pub use proposer::Proposer;
+use log::info;
 use serde::{Deserialize, Serialize};
 
 use crate::multipaxos::Ballot;
@@ -56,6 +57,7 @@ where
         C: CommandTrait,
     {
         let message = message.into();
+        info!("PaxosInstance(node={}): handling {:?}", self.acceptor.my_id, message);
         Ok(match message.clone() {
             MessageKind::PrepareMsg(prepare) => {
                 Some(self.acceptor.handle_prepare(prepare))

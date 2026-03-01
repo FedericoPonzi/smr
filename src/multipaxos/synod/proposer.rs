@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fmt::Debug;
 
-use log::debug;
+use log::{debug, info};
 
 use crate::multipaxos::{
     Accept, AckAccept, Ballot, Learn, MaxAcceptedProposal, MessageKind, NackAccept, NackPrepare,
@@ -81,7 +81,10 @@ where
         }
         self.state.promises += 1;
         if self.state.promises >= self.quorum_size {
-            println!("Proposer has reached the quorum of promises.");
+            info!(
+                "Proposer {}: quorum of {} promises reached (ballot={})",
+                self.proposer_id, self.state.promises, self.ballot
+            );
             let chosen_value = self
                 .state
                 .max_accepted_proposals
@@ -128,6 +131,10 @@ where
         }
         self.state.accepts += 1;
         if self.state.accepts >= self.quorum_size {
+            info!(
+                "Proposer {}: quorum of {} accepts reached (ballot={}), sending Learn",
+                self.proposer_id, self.state.accepts, self.ballot
+            );
             (
                 Some(Learn {
                     sender: self.proposer_id,
@@ -164,7 +171,7 @@ fn wrap_message<T: Into<MessageKind<C>> + Debug, C>(
 where
     C: CommandTrait,
 {
-    println!("{:?}", m.0);
+    debug!("Proposer state transition: response={:?}", m.0);
     (m.0.map(Into::into), m.1)
 }
 

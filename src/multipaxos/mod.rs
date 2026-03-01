@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 pub use synod::*;
+use log::info;
 use tokio::sync::oneshot;
 
 use crate::{
@@ -71,6 +72,8 @@ where
         let instance_id = self.next_instance_id;
         self.next_instance_id += 1;
 
+        info!("Node {}: proposing for instance {} cmd={:?}", self.id, instance_id, cmd);
+
         let mut instance = PaxosInstance::new(self.id, self.config.total_nodes / 2 + 1, self.config.total_nodes);
         let prepare = instance.proposer.new_prepare(cmd.clone());
         self.paxos_instances.insert(instance_id, instance);
@@ -89,6 +92,14 @@ where
         let mut outgoing_messages = Vec::new();
 
         let instance_id = paxos_msg.instance_id();
+        info!(
+            "Node {}: received network message for instance {}",
+            self.id, instance_id
+        );
+        // Keep next_instance_id ahead of any instance we've seen from other nodes
+        if instance_id >= self.next_instance_id {
+            self.next_instance_id = instance_id + 1;
+        }
         self.paxos_instances
             .entry(instance_id)
             .or_insert(PaxosInstance::new(self.id, self.config.total_nodes / 2 + 1, self.config.total_nodes));

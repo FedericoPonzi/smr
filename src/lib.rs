@@ -16,7 +16,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tokio::task::JoinHandle;
-use tracing::debug;
+use tracing::{debug, info};
 
 pub mod channel;
 pub mod multipaxos;
@@ -202,20 +202,24 @@ where
         mut outbox: mpsc::Receiver<Message<S::Command>>,
     ) {
         channel.start().await;
+        info!("Background loop started, listening for messages");
         loop {
             tokio::select! {
                 // Messages from the network → process through algorithm
                 result = channel.receive() => {
                     let Some(msg) = result else { break };
+                    info!("Network: received message for instance {}", msg.instance_id());
                     let mut algorithm_lc = algorithm.lock().await;
                     let responses = algorithm_lc.handle_message(msg).unwrap();
                     for response in responses {
+                        info!("Network: sending response for instance {}", response.instance_id());
                         channel.send(response).await;
                     }
                     let mut last_applied_commit = last_applied_command_id.write().await;
                     while let Some((command, sender)) = algorithm_lc.get_commit_id(*last_applied_commit) {
                         let mut sm = state_machine.write().await;
                         if let Ok(output) = sm.apply(command) {
+                            info!("Applied command for instance {}", *last_applied_commit);
                             if let Some(sender) = sender {
                                 let _ = sender.send(output);
                             }

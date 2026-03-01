@@ -12,6 +12,7 @@ use crate::multipaxos::{
     Promise, SenderId,
 };
 use crate::CommandTrait;
+use log::info;
 
 #[derive(Debug, Clone)]
 pub struct Acceptor<C>
@@ -38,12 +39,20 @@ where
     pub fn handle_prepare(&mut self, p: Prepare) -> MessageKind<C> {
         let is_safe_to_join_ballot = self.max_ballot < p.ballot;
         if is_safe_to_join_ballot {
+            info!(
+                "Acceptor {}: Promise for ballot {} (from sender {})",
+                self.my_id, p.ballot, p.sender
+            );
             self.max_ballot = p.ballot;
             MessageKind::PromiseMsg(Promise {
                 sender: self.my_id,
                 max_accepted: self.max_accepted.clone(),
             })
         } else {
+            info!(
+                "Acceptor {}: NackPrepare for ballot {} (max={})",
+                self.my_id, p.ballot, self.max_ballot
+            );
             MessageKind::NackPrepareMsg(NackPrepare {
                 sender: self.my_id,
                 max_ballot: self.max_ballot,
@@ -53,6 +62,10 @@ where
 
     pub fn handle_accept(&mut self, a: Accept<C>) -> MessageKind<C> {
         if a.ballot == self.max_ballot {
+            info!(
+                "Acceptor {}: AckAccept for ballot {} (from sender {})",
+                self.my_id, a.ballot, a.sender
+            );
             self.max_accepted = Some(MaxAcceptedProposal {
                 ballot: a.ballot,
                 command: a.command,
@@ -62,6 +75,10 @@ where
                 ballot: a.ballot,
             })
         } else {
+            info!(
+                "Acceptor {}: NackAccept for ballot {} (max={})",
+                self.my_id, a.ballot, self.max_ballot
+            );
             MessageKind::NackAcceptMsg(NackAccept {
                 sender: self.my_id,
                 max_ballot: self.max_ballot,

@@ -98,6 +98,7 @@ fn index() -> &'static str {
 
 #[launch]
 async fn rocket() -> _ {
+    env_logger::init();
     let config = config().expect("Failed to load config");
     let nid = config.node_id as u16;
     let smr_runtime = SmrRuntime::new(config, InnerStateMachine::new()).unwrap();
