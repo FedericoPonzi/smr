@@ -5,8 +5,7 @@ use log::{debug, info};
 
 use crate::CommandTrait;
 use crate::multipaxos::{
-    Accept, AckAccept, Ballot, Learn, MaxAcceptedProposal, MessageKind, NackAccept, NackPrepare,
-    Prepare, Promise,
+    Accept, AckAccept, Ballot, Learn, MaxAcceptedProposal, MessageKind, Prepare, Promise,
 };
 
 #[derive(Debug, Clone)]

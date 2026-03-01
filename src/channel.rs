@@ -1,5 +1,3 @@
-//! Got it! Here’s the updated breakdown:
-//!
 //!  ### `Channel` Struct Responsibilities:
 //!
 //!  1. **Exposes a single sender and receiver** to `SmrRuntime`:
@@ -22,16 +20,14 @@
 //! This ensures a structured connection setup where each node initiates
 //! connections in a **deterministic way**, reducing redundant connection attempts.
 
-use crate::multipaxos::Message;
 use crate::{Channel, Result};
 use log::warn;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::sync::mpsc::{Receiver, Sender};
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
-use tokio::io::BufReader;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -209,7 +205,7 @@ where
         }
     }
     async fn read_one_struct(reader: &mut OwnedReadHalf) -> Result<T> {
-        let mut reader = reader; //BufReader::new(reader);
+        let reader = reader; //BufReader::new(reader);
 
         // Read exactly 4 bytes for the length prefix
         let mut len_buf = [0u8; 4];

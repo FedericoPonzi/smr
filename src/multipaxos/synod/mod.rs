@@ -27,7 +27,6 @@ where
     acceptor: Acceptor<C>,
     pub(crate) proposer: Proposer<C>,
     learner: Learner<C>,
-    quorum_size: u32,
 }
 
 impl<C> PaxosInstance<C>
@@ -47,7 +46,6 @@ where
             acceptor,
             proposer,
             learner,
-            quorum_size,
         }
     }
 
