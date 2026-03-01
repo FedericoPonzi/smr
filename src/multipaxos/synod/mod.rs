@@ -58,18 +58,26 @@ where
         let message = message.into();
         Ok(match message.clone() {
             MessageKind::PrepareMsg(prepare) => {
-                self.acceptor.handle_prepare(prepare).map(Into::into)
+                Some(self.acceptor.handle_prepare(prepare))
             }
             MessageKind::PromiseMsg(promise) => self
                 .proposer
                 .handle_message(MessageKind::PromiseMsg(promise)),
-            MessageKind::AcceptMsg(accept) => self.acceptor.handle_accept(accept).map(Into::into),
+            MessageKind::AcceptMsg(accept) => Some(self.acceptor.handle_accept(accept)),
             MessageKind::LearnMsg(learn) => {
                 self.learner.handle_learn(learn)?;
                 None
             }
             MessageKind::AckAcceptMsg(msg) => {
                 self.proposer.handle_message(MessageKind::AckAcceptMsg(msg))
+            }
+            MessageKind::NackPrepareMsg(nack) => {
+                self.proposer
+                    .handle_message(MessageKind::NackPrepareMsg(nack))
+            }
+            MessageKind::NackAcceptMsg(nack) => {
+                self.proposer
+                    .handle_message(MessageKind::NackAcceptMsg(nack))
             }
             MessageKind::RequestCommandToLeader(_cmd) => self.proposer.handle_message(message),
             _ => Some(message),
@@ -110,18 +118,26 @@ mod tests {
             propose
         );
 
-        // lower ballot, acceptor doesn't care
+        // lower ballot, acceptor returns nack
         let promise: Option<MessageKind<u32>> = paxos.handle_message(Prepare {
             sender: 100,
             ballot: 1,
         })?;
-        assert_eq!(promise, None, "{:?}", paxos);
-        // equal ballot, acceptor doesn't care
+        assert!(
+            matches!(promise, Some(MessageKind::NackPrepareMsg(_))),
+            "{:?}",
+            paxos
+        );
+        // equal ballot, acceptor returns nack
         let promise: Option<MessageKind<u32>> = paxos.handle_message(Prepare {
             sender: 100,
             ballot: to,
         })?;
-        assert_eq!(promise, None, "{:?}", paxos);
+        assert!(
+            matches!(promise, Some(MessageKind::NackPrepareMsg(_))),
+            "{:?}",
+            paxos
+        );
 
         let resp: Option<MessageKind<u32>> = paxos.handle_message(Promise {
             sender: 101,

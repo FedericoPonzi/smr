@@ -8,7 +8,8 @@
  **  We will consider this crucial invariant in more detail later.
  **/
 use crate::multipaxos::{
-    Accept, AckAccept, Ballot, MaxAcceptedProposal, Prepare, Promise, SenderId,
+    Accept, AckAccept, Ballot, MaxAcceptedProposal, MessageKind, NackAccept, NackPrepare, Prepare,
+    Promise, SenderId,
 };
 use crate::CommandTrait;
 
@@ -34,39 +35,44 @@ where
         }
     }
 
-    pub fn handle_prepare(&mut self, p: Prepare) -> Option<Promise<C>> {
+    pub fn handle_prepare(&mut self, p: Prepare) -> MessageKind<C> {
         let is_safe_to_join_ballot = self.max_ballot < p.ballot;
         if is_safe_to_join_ballot {
             self.max_ballot = p.ballot;
-            Some(Promise {
+            MessageKind::PromiseMsg(Promise {
                 sender: self.my_id,
                 max_accepted: self.max_accepted.clone(),
             })
         } else {
-            None
+            MessageKind::NackPrepareMsg(NackPrepare {
+                sender: self.my_id,
+                max_ballot: self.max_ballot,
+            })
         }
     }
 
-    pub fn handle_accept(&mut self, a: Accept<C>) -> Option<AckAccept> {
+    pub fn handle_accept(&mut self, a: Accept<C>) -> MessageKind<C> {
         if a.ballot == self.max_ballot {
-            // TODO: strict equality or >=?
             self.max_accepted = Some(MaxAcceptedProposal {
                 ballot: a.ballot,
                 command: a.command,
             });
-            Some(AckAccept {
+            MessageKind::AckAcceptMsg(AckAccept {
                 sender: self.my_id,
                 ballot: a.ballot,
             })
         } else {
-            None
+            MessageKind::NackAcceptMsg(NackAccept {
+                sender: self.my_id,
+                max_ballot: self.max_ballot,
+            })
         }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::multipaxos::{Accept, Acceptor, Prepare};
+    use crate::multipaxos::{Accept, Acceptor, MessageKind, Prepare};
     /*
                TODO:
         * A ballot with max_ballot + 1 should succeed.
@@ -76,35 +82,35 @@ mod test {
              */
     #[test]
     fn test_acceptor() {
-        let mut acceptor = Acceptor::new(0);
+        let mut acceptor: Acceptor<u32> = Acceptor::new(0);
         let response = acceptor.handle_prepare(Prepare {
             sender: 1,
             ballot: 1,
         });
-        assert!(response.is_some());
+        assert!(matches!(response, MessageKind::PromiseMsg(_)));
         let accepted = Accept {
             sender: 1,
             ballot: 1,
             command: 1,
         };
         let accepted_response = acceptor.handle_accept(accepted);
-        assert!(accepted_response.is_some());
-        let accepted_response = accepted_response.unwrap();
-        assert_eq!(accepted_response.ballot, 1);
+        assert!(matches!(accepted_response, MessageKind::AckAcceptMsg(ref a) if a.ballot == 1));
 
-        assert!(acceptor
-            .handle_prepare(Prepare {
+        assert!(matches!(
+            acceptor.handle_prepare(Prepare {
                 sender: 2,
                 ballot: 2,
-            })
-            .is_some());
+            }),
+            MessageKind::PromiseMsg(_)
+        ));
         assert_eq!(acceptor.max_ballot, 2);
         // Should not promise to vote in a ballot smaller than the max ballot.
-        assert!(acceptor
-            .handle_prepare(Prepare {
+        assert!(matches!(
+            acceptor.handle_prepare(Prepare {
                 sender: 1,
                 ballot: 1,
-            })
-            .is_none());
+            }),
+            MessageKind::NackPrepareMsg(_)
+        ));
     }
 }

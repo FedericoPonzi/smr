@@ -4,7 +4,8 @@ use std::fmt::Debug;
 use log::debug;
 
 use crate::multipaxos::{
-    Accept, AckAccept, Ballot, Learn, MaxAcceptedProposal, MessageKind, Prepare, Promise,
+    Accept, AckAccept, Ballot, Learn, MaxAcceptedProposal, MessageKind, NackAccept, NackPrepare,
+    Prepare, Promise,
 };
 use crate::CommandTrait;
 
@@ -17,6 +18,7 @@ where
     C: CommandTrait,
 {
     promises: u32,
+    nacks: u32,
     max_accepted_proposals: HashSet<MaxAcceptedProposal<C>>,
     value: C,
 }
@@ -28,6 +30,7 @@ where
 {
     // number of acceptors that accepted this ballot
     accepts: u32,
+    nacks: u32,
     value: C,
 }
 
@@ -53,6 +56,7 @@ impl<S> StateWrapper<S> {
             InnerState::Proposal(StateWrapper {
                 state: ProposalState {
                     promises: 0,
+                    nacks: 0,
                     max_accepted_proposals: HashSet::new(),
                     value,
                 },
@@ -95,6 +99,7 @@ where
                 InnerState::Accepting(StateWrapper {
                     state: AcceptingState {
                         accepts: 0,
+                        nacks: 0,
                         value: chosen_value,
                     },
                     ballot: self.ballot,
@@ -186,8 +191,35 @@ where
             (InnerState::Proposal(mut state_wrapper), MessageKind::PromiseMsg(promise)) => {
                 wrap_message(state_wrapper.handle_promise(promise))
             }
+            (InnerState::Proposal(mut state_wrapper), MessageKind::NackPrepareMsg(nack)) => {
+                state_wrapper.state.nacks += 1;
+                if nack.max_ballot > state_wrapper.ballot {
+                    state_wrapper.ballot = nack.max_ballot;
+                }
+                // Can't reach quorum if too many nacks
+                if state_wrapper.state.nacks > state_wrapper.total_nodes - state_wrapper.quorum_size
+                {
+                    let value = state_wrapper.state.value.clone();
+                    wrap_message(state_wrapper.new_prepare(value))
+                } else {
+                    (None, InnerState::Proposal(state_wrapper))
+                }
+            }
             (InnerState::Accepting(mut state_wrapper), MessageKind::AckAcceptMsg(ack_accept)) => {
                 wrap_message(state_wrapper.handle_ack_accept(ack_accept))
+            }
+            (InnerState::Accepting(mut state_wrapper), MessageKind::NackAcceptMsg(nack)) => {
+                state_wrapper.state.nacks += 1;
+                if nack.max_ballot > state_wrapper.ballot {
+                    state_wrapper.ballot = nack.max_ballot;
+                }
+                if state_wrapper.state.nacks > state_wrapper.total_nodes - state_wrapper.quorum_size
+                {
+                    let value = state_wrapper.state.value.clone();
+                    wrap_message(state_wrapper.new_prepare(value))
+                } else {
+                    (None, InnerState::Accepting(state_wrapper))
+                }
             }
             r => (None, r.0),
         }

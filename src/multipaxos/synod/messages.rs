@@ -44,6 +44,8 @@ where
     PromiseMsg(Promise<T>),
     AcceptMsg(Accept<T>),
     AckAcceptMsg(AckAccept),
+    NackPrepareMsg(NackPrepare),
+    NackAcceptMsg(NackAccept),
     LearnMsg(Learn<T>),
     LearnedCommand { cmd: T },
 }
@@ -87,6 +89,18 @@ impl<C: CommandTrait> From<Learn<C>> for MessageKind<C> {
     }
 }
 
+impl<C: CommandTrait> From<NackPrepare> for MessageKind<C> {
+    fn from(nack: NackPrepare) -> Self {
+        MessageKind::NackPrepareMsg(nack)
+    }
+}
+
+impl<C: CommandTrait> From<NackAccept> for MessageKind<C> {
+    fn from(nack: NackAccept) -> Self {
+        MessageKind::NackAcceptMsg(nack)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Prepare {
     // Not needed, keep around for now just todebug:
@@ -114,6 +128,18 @@ pub struct Accept<C: CommandTrait> {
 pub struct AckAccept {
     pub sender: SenderId,
     pub(crate) ballot: Ballot,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NackPrepare {
+    pub sender: SenderId,
+    pub(crate) max_ballot: Ballot,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NackAccept {
+    pub sender: SenderId,
+    pub(crate) max_ballot: Ballot,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
