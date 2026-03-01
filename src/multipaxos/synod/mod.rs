@@ -67,10 +67,11 @@ where
                 .handle_message(MessageKind::PromiseMsg(promise)),
             MessageKind::AcceptMsg(accept) => Some(self.acceptor.handle_accept(accept)),
             MessageKind::LearnMsg(learn) => {
+                let already_learned = self.learner.is_value_learned();
                 self.learner.handle_learn(learn.clone())?;
-                // Confirm the Learn by re-broadcasting with our own ID,
-                // but only if we're not the original sender (prevents self-loops)
-                if learn.sender != self.acceptor.my_id {
+                // Re-broadcast with our own ID to help other learners reach quorum,
+                // but only if: we haven't already learned AND sender is not us
+                if !already_learned && learn.sender != self.acceptor.my_id {
                     Some(MessageKind::LearnMsg(Learn {
                         sender: self.acceptor.my_id,
                         ballot: learn.ballot,

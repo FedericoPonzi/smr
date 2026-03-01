@@ -98,7 +98,12 @@ fn index() -> &'static str {
 
 #[launch]
 async fn rocket() -> _ {
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
     let config = config().expect("Failed to load config");
     let nid = config.node_id as u16;
     let smr_runtime = SmrRuntime::new(config, InnerStateMachine::new()).unwrap();
