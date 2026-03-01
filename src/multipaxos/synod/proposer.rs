@@ -3,11 +3,11 @@ use std::fmt::Debug;
 
 use log::{debug, info};
 
+use crate::CommandTrait;
 use crate::multipaxos::{
     Accept, AckAccept, Ballot, Learn, MaxAcceptedProposal, MessageKind, NackAccept, NackPrepare,
     Prepare, Promise,
 };
-use crate::CommandTrait;
 
 #[derive(Debug, Clone)]
 struct InitialState {}

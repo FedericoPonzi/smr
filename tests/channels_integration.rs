@@ -1,4 +1,4 @@
-use rocket::form::validate::{contains, msg, Contains};
+use rocket::form::validate::{Contains, contains, msg};
 use smr::TcpChannel;
 use std::collections::HashSet;
 use std::net::SocketAddr;

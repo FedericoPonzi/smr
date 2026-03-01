@@ -1,12 +1,12 @@
 pub use acceptor::Acceptor;
 pub use learner::Learner;
+use log::info;
 pub use messages::*;
 pub use proposer::Proposer;
-use log::info;
 use serde::{Deserialize, Serialize};
 
-use crate::multipaxos::Ballot;
 use crate::CommandTrait;
+use crate::multipaxos::Ballot;
 
 mod acceptor;
 mod learner;
@@ -57,11 +57,12 @@ where
         C: CommandTrait,
     {
         let message = message.into();
-        info!("PaxosInstance(node={}): handling {:?}", self.acceptor.my_id, message);
+        info!(
+            "PaxosInstance(node={}): handling {:?}",
+            self.acceptor.my_id, message
+        );
         Ok(match message.clone() {
-            MessageKind::PrepareMsg(prepare) => {
-                Some(self.acceptor.handle_prepare(prepare))
-            }
+            MessageKind::PrepareMsg(prepare) => Some(self.acceptor.handle_prepare(prepare)),
             MessageKind::PromiseMsg(promise) => self
                 .proposer
                 .handle_message(MessageKind::PromiseMsg(promise)),
@@ -84,14 +85,12 @@ where
             MessageKind::AckAcceptMsg(msg) => {
                 self.proposer.handle_message(MessageKind::AckAcceptMsg(msg))
             }
-            MessageKind::NackPrepareMsg(nack) => {
-                self.proposer
-                    .handle_message(MessageKind::NackPrepareMsg(nack))
-            }
-            MessageKind::NackAcceptMsg(nack) => {
-                self.proposer
-                    .handle_message(MessageKind::NackAcceptMsg(nack))
-            }
+            MessageKind::NackPrepareMsg(nack) => self
+                .proposer
+                .handle_message(MessageKind::NackPrepareMsg(nack)),
+            MessageKind::NackAcceptMsg(nack) => self
+                .proposer
+                .handle_message(MessageKind::NackAcceptMsg(nack)),
             MessageKind::RequestCommandToLeader(_cmd) => self.proposer.handle_message(message),
             _ => None,
         })
@@ -103,9 +102,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::PaxosInstance;
     use crate::multipaxos::MessageKind::RequestCommandToLeader;
     use crate::multipaxos::{Accept, AckAccept, MessageKind, Prepare, Promise};
-    use crate::PaxosInstance;
 
     #[test]
     pub fn test_paxosinstance_simple() -> anyhow::Result<()> {

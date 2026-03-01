@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
 
@@ -58,7 +58,10 @@ where
         command: S::Command,
     ) -> Result<(Vec<Message<S::Command>>, oneshot::Receiver<S::Output>)>;
     fn handle_message(&mut self, message: Self::SMRMessage) -> Result<Vec<Message<S::Command>>>;
-    fn get_commit_id(&mut self, id: u64) -> Option<(S::Command, Option<oneshot::Sender<S::Output>>)>;
+    fn get_commit_id(
+        &mut self,
+        id: u64,
+    ) -> Option<(S::Command, Option<oneshot::Sender<S::Output>>)>;
 }
 
 #[derive(Debug, Clone)]

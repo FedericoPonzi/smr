@@ -1,6 +1,6 @@
+use log::info;
 use std::collections::HashMap;
 pub use synod::*;
-use log::info;
 use tokio::sync::oneshot;
 
 use crate::{
@@ -72,9 +72,16 @@ where
         let instance_id = self.next_instance_id;
         self.next_instance_id += 1;
 
-        info!("Node {}: proposing for instance {} cmd={:?}", self.id, instance_id, cmd);
+        info!(
+            "Node {}: proposing for instance {} cmd={:?}",
+            self.id, instance_id, cmd
+        );
 
-        let mut instance = PaxosInstance::new(self.id, self.config.total_nodes / 2 + 1, self.config.total_nodes);
+        let mut instance = PaxosInstance::new(
+            self.id,
+            self.config.total_nodes / 2 + 1,
+            self.config.total_nodes,
+        );
         let prepare = instance.proposer.new_prepare(cmd.clone());
         self.paxos_instances.insert(instance_id, instance);
 
@@ -102,7 +109,11 @@ where
         }
         self.paxos_instances
             .entry(instance_id)
-            .or_insert(PaxosInstance::new(self.id, self.config.total_nodes / 2 + 1, self.config.total_nodes));
+            .or_insert(PaxosInstance::new(
+                self.id,
+                self.config.total_nodes / 2 + 1,
+                self.config.total_nodes,
+            ));
 
         let response = {
             let paxos_instance = self.paxos_instances.get_mut(&instance_id).unwrap();
@@ -117,7 +128,10 @@ where
     }
 
     // actively push a value.
-    fn get_commit_id(&mut self, id: u64) -> Option<(S::Command, Option<oneshot::Sender<S::Output>>)> {
+    fn get_commit_id(
+        &mut self,
+        id: u64,
+    ) -> Option<(S::Command, Option<oneshot::Sender<S::Output>>)> {
         let instance = self.paxos_instances.get(&id)?;
         let command = instance.get_value()?;
         let sender = self.pending_senders.remove(&id);

@@ -4,11 +4,10 @@
 ///
 use std::collections::{HashMap, HashSet};
 
-
 use log::{debug, info};
 
-use crate::multipaxos::{Learn, MessageKind};
 use crate::CommandTrait;
+use crate::multipaxos::{Learn, MessageKind};
 
 #[derive(Debug, Clone)]
 pub struct Learner<C>

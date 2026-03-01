@@ -1,5 +1,5 @@
-use crate::multipaxos::{Ballot, MaxAcceptedProposal};
 use crate::CommandTrait;
+use crate::multipaxos::{Ballot, MaxAcceptedProposal};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 

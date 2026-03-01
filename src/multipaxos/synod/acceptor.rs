@@ -1,3 +1,4 @@
+use crate::CommandTrait;
 /**
  ** * A1: an acceptor can only adopt strictly increasing ballot numbers;
  ** * A2: an acceptor α can only add 〈b, s, c〉 to α.accepted (i.p., accept 〈b, s, c〉) if b = α.ballot num;
@@ -11,7 +12,6 @@ use crate::multipaxos::{
     Accept, AckAccept, Ballot, MaxAcceptedProposal, MessageKind, NackAccept, NackPrepare, Prepare,
     Promise, SenderId,
 };
-use crate::CommandTrait;
 use log::info;
 
 #[derive(Debug, Clone)]
@@ -91,12 +91,12 @@ where
 mod test {
     use crate::multipaxos::{Accept, Acceptor, MessageKind, Prepare};
     /*
-               TODO:
-        * A ballot with max_ballot + 1 should succeed.
-        * A ballot equal to max_ballot should fail (in handle_prepare).
-        * Ensure that max_accepted does not change if an accept is rejected.
+           TODO:
+    * A ballot with max_ballot + 1 should succeed.
+    * A ballot equal to max_ballot should fail (in handle_prepare).
+    * Ensure that max_accepted does not change if an accept is rejected.
 
-             */
+         */
     #[test]
     fn test_acceptor() {
         let mut acceptor: Acceptor<u32> = Acceptor::new(0);
