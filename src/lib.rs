@@ -77,7 +77,7 @@ pub struct SmrConfig {
     pub node_id: u32,
     // A list of socket addresses
     total_nodes: u32,
-    pub other_nodes: Vec<String>,
+    pub other_nodes: Vec<(u32, String)>,
     pub bind_address: String,
 }
 
@@ -91,7 +91,7 @@ impl SmrConfig {
     pub fn new(
         node_id: u32,
         bind_address: Option<String>,
-        other_nodes: Vec<String>,
+        other_nodes: Vec<(u32, String)>,
     ) -> Result<SmrConfig> {
         Ok(SmrConfig {
             node_id,
@@ -145,7 +145,7 @@ struct SmrRuntimeInner<S: StateMachine> {
     algorithm: Arc<Mutex<MultiPaxosNode<S>>>,
     state_machine: Arc<RwLock<S>>,
     last_applied_command_id: Arc<RwLock<u64>>,
-    channel: mpsc::Sender<Message<S::Command>>,
+    outbox: mpsc::Sender<Message<S::Command>>,
     ch_handle: JoinHandle<()>,
 }
 impl<S> SmrRuntimeInner<S>
@@ -164,17 +164,12 @@ where
             config
                 .other_nodes
                 .iter()
-                .map(|n| {
-                    (
-                        n.split(":").collect::<Vec<&str>>()[1].parse().unwrap(),
-                        n.clone().parse().unwrap(),
-                    )
-                })
+                .map(|(id, addr)| (*id, addr.parse().unwrap()))
                 .collect(),
         );
         let state_machine = Arc::new(RwLock::new(state_machine));
-        let sender = channel.sender.clone();
-        let algorithm_cl = Arc::clone(&algorithm); // Clone Arc for async task
+        let (outbox_tx, outbox_rx) = mpsc::channel(100);
+        let algorithm_cl = Arc::clone(&algorithm);
         let last_applied_command_id = Arc::new(RwLock::new(0u64));
         let last_applied_command_id_cl = last_applied_command_id.clone();
         let state_machine_cl = state_machine.clone();
@@ -185,6 +180,7 @@ where
                 algorithm_cl,
                 last_applied_command_id_cl,
                 state_machine_cl,
+                outbox_rx,
             )
             .await
         });
@@ -194,7 +190,7 @@ where
             algorithm,
             state_machine,
             last_applied_command_id,
-            channel: sender,
+            outbox: outbox_tx,
             ch_handle: handle,
         })
     }
@@ -203,23 +199,35 @@ where
         algorithm: Arc<Mutex<MultiPaxosNode<S>>>,
         last_applied_command_id: Arc<RwLock<u64>>,
         state_machine: Arc<RwLock<S>>,
+        mut outbox: mpsc::Receiver<Message<S::Command>>,
     ) {
-        while let Some(msg) = channel.receive().await {
-            let mut algorithm_lc = algorithm.lock().await;
-            let responses = algorithm_lc.handle_message(msg).unwrap();
-            for response in responses {
-                channel.send(response).await;
-            }
-            let mut last_applied_commit = last_applied_command_id.write().await;
-
-            while let Some((command, sender)) = algorithm_lc.get_commit_id(*last_applied_commit) {
-                let mut sm = state_machine.write().await;
-                if let Ok(output) = sm.apply(command) {
-                    if let Some(sender) = sender {
-                        let _ = sender.send(output);
+        channel.start().await;
+        loop {
+            tokio::select! {
+                // Messages from the network → process through algorithm
+                result = channel.receive() => {
+                    let Some(msg) = result else { break };
+                    let mut algorithm_lc = algorithm.lock().await;
+                    let responses = algorithm_lc.handle_message(msg).unwrap();
+                    for response in responses {
+                        channel.send(response).await;
+                    }
+                    let mut last_applied_commit = last_applied_command_id.write().await;
+                    while let Some((command, sender)) = algorithm_lc.get_commit_id(*last_applied_commit) {
+                        let mut sm = state_machine.write().await;
+                        if let Ok(output) = sm.apply(command) {
+                            if let Some(sender) = sender {
+                                let _ = sender.send(output);
+                            }
+                        }
+                        *last_applied_commit += 1;
                     }
                 }
-                *last_applied_commit += 1;
+                // Messages from propose() → already processed, just forward to TCP
+                result = outbox.recv() => {
+                    let Some(msg) = result else { break };
+                    channel.send(msg).await;
+                }
             }
         }
     }
@@ -233,7 +241,7 @@ where
         // continuosly tries to push proposals
         let (ret, resp) = alg.propose(cmd)?;
         for m in ret {
-            self.channel.send(m).await?;
+            self.outbox.send(m).await?;
         }
         Ok(resp)
     }

@@ -47,8 +47,12 @@ fn config() -> anyhow::Result<smr::SmrConfig> {
 
     let other_nodes = (0..3)
         .filter(|&n| n != node_id)
-        .map(|n| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ports[n as usize]))
-        .map(|a| a.to_string())
+        .map(|n| {
+            (
+                n as u32,
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ports[n as usize]).to_string(),
+            )
+        })
         .collect();
 
     SmrConfig::new(node_id as u32, Some(bind_address.to_string()), other_nodes)

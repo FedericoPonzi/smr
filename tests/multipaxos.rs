@@ -32,7 +32,7 @@ fn test_smr_multipaxos() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .init();
-    let other_nodes = vec!["123".into(), "124".into(), "125".into()];
+    let other_nodes = vec![(2, "123".into()), (3, "124".into()), (4, "125".into())];
     let mut mpn1: MultiPaxosNode<MySM> = smr::multipaxos::MultiPaxosNode::new(
         smr::SmrConfig::new(1, None, other_nodes.clone()).unwrap(),
     );

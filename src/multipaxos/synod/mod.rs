@@ -65,8 +65,18 @@ where
                 .handle_message(MessageKind::PromiseMsg(promise)),
             MessageKind::AcceptMsg(accept) => Some(self.acceptor.handle_accept(accept)),
             MessageKind::LearnMsg(learn) => {
-                self.learner.handle_learn(learn)?;
-                None
+                self.learner.handle_learn(learn.clone())?;
+                // Confirm the Learn by re-broadcasting with our own ID,
+                // but only if we're not the original sender (prevents self-loops)
+                if learn.sender != self.acceptor.my_id {
+                    Some(MessageKind::LearnMsg(Learn {
+                        sender: self.acceptor.my_id,
+                        ballot: learn.ballot,
+                        command: learn.command,
+                    }))
+                } else {
+                    None
+                }
             }
             MessageKind::AckAcceptMsg(msg) => {
                 self.proposer.handle_message(MessageKind::AckAcceptMsg(msg))
