@@ -3,7 +3,9 @@ use std::collections::HashMap;
 pub use synod::*;
 use tokio::sync::oneshot;
 
-use crate::{Result, SmrConfig, StateMachine, StateMachineReplicationAlgorithm};
+use crate::{
+    CommitResult, ProposalResult, Result, SmrConfig, StateMachine, StateMachineReplicationAlgorithm,
+};
 
 mod synod;
 
@@ -63,10 +65,7 @@ where
     S: StateMachine,
 {
     type SMRMessage = Message<S::Command>;
-    fn propose(
-        &mut self,
-        cmd: S::Command,
-    ) -> Result<(Vec<Message<S::Command>>, oneshot::Receiver<S::Output>)> {
+    fn propose(&mut self, cmd: S::Command) -> Result<ProposalResult<S>> {
         let instance_id = self.next_instance_id;
         self.next_instance_id += 1;
 
@@ -126,10 +125,7 @@ where
     }
 
     // actively push a value.
-    fn get_commit_id(
-        &mut self,
-        id: u64,
-    ) -> Option<(S::Command, Option<oneshot::Sender<S::Output>>)> {
+    fn get_commit_id(&mut self, id: u64) -> Option<CommitResult<S>> {
         let instance = self.paxos_instances.get(&id)?;
         let command = instance.get_value()?;
         let sender = self.pending_senders.remove(&id);

@@ -48,20 +48,23 @@ where
     fn send(&mut self, message: C) -> Result<()>;
 }
 
+pub type ProposalResult<S> = (
+    Vec<Message<<S as StateMachine>::Command>>,
+    oneshot::Receiver<<S as StateMachine>::Output>,
+);
+pub type CommitResult<S> = (
+    <S as StateMachine>::Command,
+    Option<oneshot::Sender<<S as StateMachine>::Output>>,
+);
+
 pub trait StateMachineReplicationAlgorithm<S>
 where
     S: StateMachine,
 {
     type SMRMessage;
-    fn propose(
-        &mut self,
-        command: S::Command,
-    ) -> Result<(Vec<Message<S::Command>>, oneshot::Receiver<S::Output>)>;
+    fn propose(&mut self, command: S::Command) -> Result<ProposalResult<S>>;
     fn handle_message(&mut self, message: Self::SMRMessage) -> Result<Vec<Message<S::Command>>>;
-    fn get_commit_id(
-        &mut self,
-        id: u64,
-    ) -> Option<(S::Command, Option<oneshot::Sender<S::Output>>)>;
+    fn get_commit_id(&mut self, id: u64) -> Option<CommitResult<S>>;
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +119,7 @@ pub trait SerializableCommand: CommandTrait + Serialize + Debug + for<'a> Deseri
 impl<T> SerializableCommand for T where T: CommandTrait + Serialize + for<'a> Deserialize<'a> {}
 
 pub struct SmrRuntime<S: StateMachine + 'static> {
-    pending_proposals: HashMap<u64, (S::Command, Option<oneshot::Sender<S::Output>>)>,
+    pending_proposals: HashMap<u64, CommitResult<S>>,
     // this is just a counter.
     next_proposal_id: u64,
     inner: Arc<Mutex<SmrRuntimeInner<S>>>,
@@ -143,6 +146,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 struct SmrRuntimeInner<S: StateMachine> {
     config: SmrConfig,
     algorithm: Arc<Mutex<MultiPaxosNode<S>>>,

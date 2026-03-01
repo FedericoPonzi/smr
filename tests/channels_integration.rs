@@ -1,4 +1,3 @@
-use rocket::form::validate::{Contains, contains, msg};
 use smr::TcpChannel;
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -20,7 +19,7 @@ async fn test_channel_happy_path() {
     let peers2 = vec![(1, addr1), (3, addr3)];
     let peers3 = vec![(1, addr1), (2, addr2)];
 
-    let mut channel1 = TcpChannel::new(1, addr1, peers1);
+    let channel1 = TcpChannel::new(1, addr1, peers1);
     channel1.start().await;
     let mut channel2: TcpChannel<String> = TcpChannel::new(2, addr2, peers2);
     channel2.start().await;

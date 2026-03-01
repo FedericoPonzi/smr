@@ -6,7 +6,6 @@ use crate::kvstore::{InnerStateMachine, KeyValueStore};
 use rocket::http::Status;
 use rocket::response::status;
 use rocket::serde::json::Json;
-use rocket::yansi::Paint;
 use rocket::{Config, State};
 use smr::{SmrConfig, SmrRuntime};
 

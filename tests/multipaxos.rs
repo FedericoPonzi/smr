@@ -36,11 +36,11 @@ fn test_smr_multipaxos() {
     let mut mpn1: MultiPaxosNode<MySM> = smr::multipaxos::MultiPaxosNode::new(
         smr::SmrConfig::new(1, None, other_nodes.clone()).unwrap(),
     );
-    let mpn2: MultiPaxosNode<MySM> =
+    let _mpn2: MultiPaxosNode<MySM> =
         smr::multipaxos::MultiPaxosNode::new(smr::SmrConfig::new(2, None, other_nodes).unwrap());
-    let out = mpn1.propose(Command::Set(42)).unwrap();
-    let out = mpn1.propose(Command::Set(42)).unwrap();
-    let out = mpn1.propose(Command::Set(42)).unwrap();
+    let _out = mpn1.propose(Command::Set(42)).unwrap();
+    let _out = mpn1.propose(Command::Set(42)).unwrap();
+    let _out = mpn1.propose(Command::Set(42)).unwrap();
     let out = mpn1.propose(Command::Set(42)).unwrap();
     debug!("{:?}", out.0);
 }

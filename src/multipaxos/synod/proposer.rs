@@ -73,10 +73,8 @@ where
     C: CommandTrait,
 {
     pub fn handle_promise(&mut self, response: Promise<C>) -> (Option<Accept<C>>, InnerState<C>) {
-        if response.max_accepted.is_some() {
-            self.state
-                .max_accepted_proposals
-                .insert(response.max_accepted.unwrap());
+        if let Some(accepted) = response.max_accepted {
+            self.state.max_accepted_proposals.insert(accepted);
         }
         self.state.promises += 1;
         if self.state.promises >= self.quorum_size {

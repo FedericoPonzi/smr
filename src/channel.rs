@@ -205,8 +205,6 @@ where
         }
     }
     async fn read_one_struct(reader: &mut OwnedReadHalf) -> Result<T> {
-        let reader = reader; //BufReader::new(reader);
-
         // Read exactly 4 bytes for the length prefix
         let mut len_buf = [0u8; 4];
         reader.read_exact(&mut len_buf).await?;
@@ -401,7 +399,7 @@ mod tests {
             let received_data = Arc::clone(&received_data);
             thread::spawn(move || {
                 for _ in 0..5 {
-                    if let Some(d) = receiver1.recv().ok() {
+                    if let Ok(d) = receiver1.recv() {
                         received_data.lock().unwrap().push(d);
                     }
                 }
@@ -412,7 +410,7 @@ mod tests {
             let received_data = Arc::clone(&received_data);
             thread::spawn(move || {
                 for _ in 0..5 {
-                    if let Some(d) = receiver2.recv().ok() {
+                    if let Ok(d) = receiver2.recv() {
                         received_data.lock().unwrap().push(d);
                     }
                 }
