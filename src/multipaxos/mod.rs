@@ -113,16 +113,14 @@ where
         if instance_id >= self.next_instance_id {
             self.next_instance_id = instance_id + 1;
         }
-        self.paxos_instances
-            .entry(instance_id)
-            .or_insert_with(|| {
-                PaxosInstance::new(
-                    self.id,
-                    self.config.total_nodes / 2 + 1,
-                    self.config.total_nodes,
-                    instance_id,
-                )
-            });
+        self.paxos_instances.entry(instance_id).or_insert_with(|| {
+            PaxosInstance::new(
+                self.id,
+                self.config.total_nodes / 2 + 1,
+                self.config.total_nodes,
+                instance_id,
+            )
+        });
 
         let response = {
             let paxos_instance = self.paxos_instances.get_mut(&instance_id).unwrap();

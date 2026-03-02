@@ -18,7 +18,10 @@ fn config() -> anyhow::Result<smr::SmrConfig> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 3 {
-        anyhow::bail!("Usage: {} <node_id> <port1,port2,...,portN>  (N >= 3)", args[0]);
+        anyhow::bail!(
+            "Usage: {} <node_id> <port1,port2,...,portN>  (N >= 3)",
+            args[0]
+        );
     }
 
     let node_id: u16 = args[1]
@@ -36,10 +39,17 @@ fn config() -> anyhow::Result<smr::SmrConfig> {
 
     let num_nodes = ports.len();
     if num_nodes < 3 {
-        anyhow::bail!("Must provide at least 3 port numbers separated by commas, got {}", num_nodes);
+        anyhow::bail!(
+            "Must provide at least 3 port numbers separated by commas, got {}",
+            num_nodes
+        );
     }
     if node_id as usize >= num_nodes {
-        anyhow::bail!("Node ID must be in range 0..{} (got {})", num_nodes - 1, node_id);
+        anyhow::bail!(
+            "Node ID must be in range 0..{} (got {})",
+            num_nodes - 1,
+            node_id
+        );
     }
 
     let bind_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ports[node_id as usize]);

@@ -6,10 +6,10 @@
 //!   competing proposers. Runs 50 seeds; on violation, re-runs with tracing
 //!   enabled and dumps the full event log for debugging.
 
-use rand::rngs::StdRng;
-use rand::seq::SliceRandom;
 use rand::Rng;
 use rand::SeedableRng;
+use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use smr::multipaxos::{Message, MultiPaxosNode};
 use smr::{SmrConfig, StateMachine, StateMachineReplicationAlgorithm};
@@ -324,7 +324,10 @@ fn test_randomized_traces() {
         if !violations.is_empty() {
             // Re-run with tracing enabled to capture the full event log
             let (_, trace_events) = run_simulation(seed, num_proposals, drop_prob, 50, true);
-            println!("\n=== Trace for seed={seed} ({} events) ===", trace_events.len());
+            println!(
+                "\n=== Trace for seed={seed} ({} events) ===",
+                trace_events.len()
+            );
             for evt in &trace_events {
                 println!("  {}", evt);
             }
@@ -342,5 +345,9 @@ fn test_randomized_traces() {
         }
     }
 
-    assert!(all_violations.is_empty(), "Found {} agreement violations", all_violations.len());
+    assert!(
+        all_violations.is_empty(),
+        "Found {} agreement violations",
+        all_violations.len()
+    );
 }

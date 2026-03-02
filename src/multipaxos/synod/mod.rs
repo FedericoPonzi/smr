@@ -72,13 +72,21 @@ where
                             None => (None, None),
                         };
                         super::trace::trace_phase1b(
-                            node_id, self.instance_id, prepare.ballot, prepare.sender,
-                            self.acceptor.max_ballot, mvb, mvl.as_deref(),
+                            node_id,
+                            self.instance_id,
+                            prepare.ballot,
+                            prepare.sender,
+                            self.acceptor.max_ballot,
+                            mvb,
+                            mvl.as_deref(),
                         );
                     }
                     MessageKind::NackPrepareMsg(_) => {
                         super::trace::trace_nack_prepare(
-                            node_id, self.instance_id, prepare.ballot, prepare.sender,
+                            node_id,
+                            self.instance_id,
+                            prepare.ballot,
+                            prepare.sender,
                             self.acceptor.max_ballot,
                         );
                     }
@@ -92,7 +100,9 @@ where
                     .handle_message(MessageKind::PromiseMsg(promise));
                 if let Some(MessageKind::AcceptMsg(ref accept)) = response {
                     super::trace::trace_phase2a(
-                        self.acceptor.my_id, self.instance_id, accept.ballot,
+                        self.acceptor.my_id,
+                        self.instance_id,
+                        accept.ballot,
                         &format!("{:?}", accept.command),
                     );
                 }
@@ -105,14 +115,21 @@ where
                     MessageKind::AckAcceptMsg(_) => {
                         let max_acc = self.acceptor.max_accepted.as_ref().unwrap();
                         super::trace::trace_phase2b(
-                            node_id, self.instance_id, accept.ballot, accept.sender,
-                            self.acceptor.max_ballot, max_acc.ballot,
+                            node_id,
+                            self.instance_id,
+                            accept.ballot,
+                            accept.sender,
+                            self.acceptor.max_ballot,
+                            max_acc.ballot,
                             &format!("{:?}", max_acc.command),
                         );
                     }
                     MessageKind::NackAcceptMsg(_) => {
                         super::trace::trace_nack_accept(
-                            node_id, self.instance_id, accept.ballot, accept.sender,
+                            node_id,
+                            self.instance_id,
+                            accept.ballot,
+                            accept.sender,
                             self.acceptor.max_ballot,
                         );
                     }
@@ -125,7 +142,9 @@ where
                 self.learner.handle_learn(learn.clone())?;
                 if !already_learned && self.learner.is_value_learned() {
                     super::trace::trace_learn(
-                        self.acceptor.my_id, self.instance_id, learn.ballot,
+                        self.acceptor.my_id,
+                        self.instance_id,
+                        learn.ballot,
                         &format!("{:?}", learn.command),
                     );
                 }
@@ -153,9 +172,7 @@ where
             MessageKind::RequestCommandToLeader(_cmd) => {
                 let response = self.proposer.handle_message(message);
                 if let Some(MessageKind::PrepareMsg(ref prep)) = response {
-                    super::trace::trace_phase1a(
-                        self.acceptor.my_id, self.instance_id, prep.ballot,
-                    );
+                    super::trace::trace_phase1a(self.acceptor.my_id, self.instance_id, prep.ballot);
                 }
                 response
             }
