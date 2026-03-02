@@ -8,6 +8,7 @@ use crate::{
 };
 
 mod synod;
+pub(crate) mod trace;
 
 type Ballot = u32;
 
@@ -38,6 +39,10 @@ where
             pending_senders: HashMap::new(),
             next_instance_id: 0,
         }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
     }
 
     /// Process a message locally through the PaxosInstance and cascade any responses.
@@ -78,8 +83,12 @@ where
             self.id,
             self.config.total_nodes / 2 + 1,
             self.config.total_nodes,
+            instance_id,
         );
         let prepare = instance.proposer.new_prepare(cmd.clone());
+        if let MessageKind::PrepareMsg(ref prep) = prepare {
+            trace::trace_phase1a(self.id, instance_id, prep.ballot);
+        }
         self.paxos_instances.insert(instance_id, instance);
 
         let mut outgoing_messages = vec![Message::new(self.id, prepare.clone(), instance_id)];
@@ -106,11 +115,14 @@ where
         }
         self.paxos_instances
             .entry(instance_id)
-            .or_insert(PaxosInstance::new(
-                self.id,
-                self.config.total_nodes / 2 + 1,
-                self.config.total_nodes,
-            ));
+            .or_insert_with(|| {
+                PaxosInstance::new(
+                    self.id,
+                    self.config.total_nodes / 2 + 1,
+                    self.config.total_nodes,
+                    instance_id,
+                )
+            });
 
         let response = {
             let paxos_instance = self.paxos_instances.get_mut(&instance_id).unwrap();

@@ -26,6 +26,9 @@ where
             paxos_instance,
         }
     }
+    pub fn sender_id(&self) -> SenderId {
+        self.sender_id
+    }
     pub fn instance_id(&self) -> u64 {
         self.paxos_instance
     }
