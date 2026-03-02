@@ -9,6 +9,10 @@ authors = ["Federico Ponzi <me@fponzi.me>"]
 name = "kvstore"
 path = "examples/kvstore/main.rs"
 
+[[example]]
+name = "counter"
+path = "examples/counter/main.rs"
+
 [dependencies]
 anyhow = "~1.0"
 thiserror = "2.0.11"

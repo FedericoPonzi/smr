@@ -106,6 +106,63 @@ impl SmrConfig {
             other_nodes,
         })
     }
+
+    /// Parse config from CLI args: `<binary> <node_id> <port1,port2,...,portN>`
+    pub fn from_cli_args() -> Result<SmrConfig> {
+        use std::env;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let args: Vec<String> = env::args().collect();
+
+        if args.len() != 3 {
+            anyhow::bail!(
+                "Usage: {} <node_id> <port1,port2,...,portN>  (N >= 3)",
+                args[0]
+            );
+        }
+
+        let node_id: u16 = args[1]
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid node ID"))?;
+
+        let ports: Vec<u16> = args[2]
+            .split(',')
+            .map(|s| {
+                s.parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid port number"))
+            })
+            .collect::<std::result::Result<_, _>>()?;
+
+        let num_nodes = ports.len();
+        if num_nodes < 3 {
+            anyhow::bail!(
+                "Must provide at least 3 port numbers separated by commas, got {}",
+                num_nodes
+            );
+        }
+        if node_id as usize >= num_nodes {
+            anyhow::bail!(
+                "Node ID must be in range 0..{} (got {})",
+                num_nodes - 1,
+                node_id
+            );
+        }
+
+        let bind_address =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ports[node_id as usize]);
+
+        let other_nodes = (0..num_nodes)
+            .filter(|&n| n != node_id as usize)
+            .map(|n| {
+                (
+                    n as u32,
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ports[n]).to_string(),
+                )
+            })
+            .collect();
+
+        SmrConfig::new(node_id as u32, Some(bind_address.to_string()), other_nodes)
+    }
 }
 
 // TODO: revisit. Implement them on MaxAcceptedResponse

@@ -44,21 +44,6 @@ java -Dtlc2.tool.queue.IStateQueue=StateDeque \
   -jar ../tla2tools.jar -config TracePaxos.cfg TracePaxos.tla
 ```
 
-## Directory structure
-
-```
-tla/
-  TraceUtils.tla          — Shared TLA+ helpers (reusable across algorithms)
-  check_trace.py          — Generic trace-checking pipeline script
-  README.md               — This file
-  paxos/
-    Paxos.tla             — Single-decree Paxos (Synod) specification
-    TracePaxos.tla        — Trace validation spec for Paxos
-    TracePaxos.cfg        — TLC configuration template
-  raft/                   — (future) Raft specification + trace spec
-  vsr/                    — (future) Viewstamped Replication spec + trace spec
-```
-
 ## Adding a new algorithm
 
 1. Create `tla/<algorithm>/` directory
