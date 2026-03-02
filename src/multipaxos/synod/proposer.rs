@@ -200,12 +200,14 @@ where
             }
             (InnerState::Proposal(mut state_wrapper), MessageKind::NackPrepareMsg(nack)) => {
                 state_wrapper.state.nacks += 1;
-                if nack.max_ballot > state_wrapper.ballot {
-                    state_wrapper.ballot = nack.max_ballot;
-                }
                 // Can't reach quorum if too many nacks
                 if state_wrapper.state.nacks > state_wrapper.total_nodes - state_wrapper.quorum_size
                 {
+                    // Adopt the highest ballot seen before retrying so new_prepare
+                    // generates a ballot above it.
+                    if nack.max_ballot > state_wrapper.ballot {
+                        state_wrapper.ballot = nack.max_ballot;
+                    }
                     let value = state_wrapper.state.value.clone();
                     wrap_message(state_wrapper.new_prepare(value))
                 } else {
@@ -217,11 +219,11 @@ where
             }
             (InnerState::Accepting(mut state_wrapper), MessageKind::NackAcceptMsg(nack)) => {
                 state_wrapper.state.nacks += 1;
-                if nack.max_ballot > state_wrapper.ballot {
-                    state_wrapper.ballot = nack.max_ballot;
-                }
                 if state_wrapper.state.nacks > state_wrapper.total_nodes - state_wrapper.quorum_size
                 {
+                    if nack.max_ballot > state_wrapper.ballot {
+                        state_wrapper.ballot = nack.max_ballot;
+                    }
                     let value = state_wrapper.state.value.clone();
                     wrap_message(state_wrapper.new_prepare(value))
                 } else {
