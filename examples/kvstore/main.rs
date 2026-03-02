@@ -18,16 +18,12 @@ fn config() -> anyhow::Result<smr::SmrConfig> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 3 {
-        anyhow::bail!("Usage: {} <node_id> <port1,port2,port3>", args[0]);
+        anyhow::bail!("Usage: {} <node_id> <port1,port2,...,portN>  (N >= 3)", args[0]);
     }
 
     let node_id: u16 = args[1]
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid node ID"))?;
-
-    if node_id >= 3 {
-        anyhow::bail!("Node ID must be 0, 1, or 2");
-    }
 
     let ports_str = &args[2];
     let ports: Vec<u16> = ports_str
@@ -38,18 +34,22 @@ fn config() -> anyhow::Result<smr::SmrConfig> {
         })
         .collect::<Result<_, _>>()?;
 
-    if ports.len() != 3 {
-        anyhow::bail!("Must provide 3 port numbers separated by commas");
+    let num_nodes = ports.len();
+    if num_nodes < 3 {
+        anyhow::bail!("Must provide at least 3 port numbers separated by commas, got {}", num_nodes);
+    }
+    if node_id as usize >= num_nodes {
+        anyhow::bail!("Node ID must be in range 0..{} (got {})", num_nodes - 1, node_id);
     }
 
     let bind_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ports[node_id as usize]);
 
-    let other_nodes = (0..3)
-        .filter(|&n| n != node_id)
+    let other_nodes = (0..num_nodes)
+        .filter(|&n| n != node_id as usize)
         .map(|n| {
             (
                 n as u32,
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ports[n as usize]).to_string(),
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), ports[n]).to_string(),
             )
         })
         .collect();
