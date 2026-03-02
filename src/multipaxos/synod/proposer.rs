@@ -73,6 +73,9 @@ where
     C: CommandTrait,
 {
     pub fn handle_promise(&mut self, response: Promise<C>) -> (Option<Accept<C>>, InnerState<C>) {
+        if response.ballot != self.ballot {
+            return (None, InnerState::Proposal(self.clone()));
+        }
         if let Some(accepted) = response.max_accepted {
             self.state.max_accepted_proposals.insert(accepted);
         }
@@ -273,28 +276,33 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::multipaxos::NackPrepare;
 
     #[test]
     fn test_proposer() {
         let mut proposer = Proposer::new(1, 2, 3);
-        let _prepare = proposer.new_prepare(123);
+        let prepare = proposer.new_prepare(123);
+        let ballot = match &prepare {
+            MessageKind::PrepareMsg(p) => p.ballot,
+            _ => panic!("expected PrepareMsg"),
+        };
         let promise = Promise {
             sender: 2,
+            ballot,
             max_accepted: None,
         };
         let resp = proposer.handle_message(promise.clone());
         assert!(resp.is_none());
-        let ballot;
         if let InnerState::Proposal(state_wrapper) = &proposer.inner_state {
             assert_eq!(state_wrapper.state.promises, 1);
             assert!(state_wrapper.state.max_accepted_proposals.is_empty());
             assert_eq!(state_wrapper.state.value, 123);
-            ballot = state_wrapper.ballot
         } else {
             panic!("Failed");
         }
         let resp = proposer.handle_message(Promise {
             sender: 3,
+            ballot,
             max_accepted: None,
         });
         assert!(matches!(resp.unwrap(), MessageKind::AcceptMsg(_)));
@@ -312,11 +320,16 @@ mod tests {
         let mut proposer = Proposer::new(1, 2, 3);
 
         // Proposer starts a new proposal
-        let _ = proposer.new_prepare(100);
+        let prepare = proposer.new_prepare(100);
+        let ballot = match &prepare {
+            MessageKind::PrepareMsg(p) => p.ballot,
+            _ => panic!("expected PrepareMsg"),
+        };
 
         // First promise with no accepted value
         let resp = proposer.handle_message(Promise {
             sender: 2,
+            ballot,
             max_accepted: Some(MaxAcceptedProposal {
                 ballot: 5,
                 command: 200,
@@ -327,6 +340,7 @@ mod tests {
         // Second promise with a higher ballot value
         let resp = proposer.handle_message(Promise {
             sender: 3,
+            ballot,
             max_accepted: Some(MaxAcceptedProposal {
                 ballot: 10, // Highest ballot seen
                 command: 300,
@@ -359,5 +373,71 @@ mod tests {
         } else {
             panic!("First prepare message is not of type PrepareMsg");
         }
+    }
+
+    /// Regression test: stale promises from an old ballot must not count toward
+    /// a new ballot's quorum. Without a ballot field on Promise, a proposer that
+    /// retries after nacks can reach false quorum using leftover promises from
+    /// the previous round combined with a single valid promise from the new round.
+    ///
+    /// Scenario (3 nodes, quorum=2, proposer=node 1):
+    /// 1. Proposer sends Prepare(ballot=4), gets 1 self-promise
+    /// 2. Proposer gets 2 NackPrepare → retries at ballot=7
+    /// 3. Gets 1 self-promise for ballot=7 (promise count = 1)
+    /// 4. Stale promise from ballot=4 arrives → should be IGNORED
+    ///    BUG: counted as promise #2 → false quorum → Accept with wrong value
+    #[test]
+    fn test_stale_promise_ignored_after_retry() {
+        let mut proposer: Proposer<u32> = Proposer::new(1, 2, 3);
+
+        // Phase 1: Prepare at ballot=4 (node 1, total_nodes=3 → ballot = (1/3+1)*3+1 = 4)
+        let prepare1 = proposer.new_prepare(100);
+        let ballot1 = match &prepare1 {
+            MessageKind::PrepareMsg(p) => p.ballot,
+            _ => panic!("expected PrepareMsg"),
+        };
+        assert_eq!(ballot1, 4);
+
+        // Two nacks arrive → proposer retries with higher ballot
+        let resp = proposer.handle_message(NackPrepare {
+            sender: 2,
+            max_ballot: 5,
+        });
+        assert!(resp.is_none(), "1 nack, not enough to trigger retry");
+
+        let resp = proposer.handle_message(NackPrepare {
+            sender: 3,
+            max_ballot: 5,
+        });
+        // 2 nacks > total_nodes - quorum_size (3-2=1) → retry
+        let ballot2 = match &resp {
+            Some(MessageKind::PrepareMsg(p)) => p.ballot,
+            _ => panic!("should retry after 2 nacks: {:?}", resp),
+        };
+        assert!(ballot2 > ballot1, "new ballot should be higher");
+
+        // Self-promise for the new ballot (simulates self_deliver)
+        let resp = proposer.handle_message(Promise {
+            sender: 1,
+            ballot: ballot2,
+            max_accepted: None,
+        });
+        assert!(resp.is_none(), "1 promise for new ballot, need 2");
+
+        // Now a STALE promise from ballot=4 arrives from the network.
+        // This promise has no accepted value, so the proposer would use its own value.
+        // BUG (before fix): counted as promise #2 → false quorum → sends Accept(ballot2, value=100)
+        //      without knowing about values that may have been accepted between ballot1 and ballot2
+        // CORRECT: stale promise ignored → still waiting for a real promise at ballot2
+        let resp = proposer.handle_message(Promise {
+            sender: 2,
+            ballot: ballot1, // ← stale! This is for the OLD ballot
+            max_accepted: None,
+        });
+        assert!(
+            resp.is_none(),
+            "stale promise from old ballot should be ignored, but got: {:?}",
+            resp
+        );
     }
 }

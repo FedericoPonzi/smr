@@ -1,11 +1,11 @@
-use crate::CommandTrait;
 use crate::multipaxos::{Ballot, MaxAcceptedProposal};
+use crate::CommandTrait;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Formatter};
 
 pub type SenderId = u32;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Message<T>
 where
     T: CommandTrait,
@@ -114,6 +114,7 @@ where
     C: CommandTrait,
 {
     pub sender: SenderId,
+    pub(crate) ballot: Ballot,
     pub(crate) max_accepted: Option<MaxAcceptedProposal<C>>,
 }
 

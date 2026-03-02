@@ -46,6 +46,7 @@ where
             self.max_ballot = p.ballot;
             MessageKind::PromiseMsg(Promise {
                 sender: self.my_id,
+                ballot: p.ballot,
                 max_accepted: self.max_accepted.clone(),
             })
         } else {
