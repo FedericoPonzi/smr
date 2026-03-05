@@ -6,6 +6,7 @@
 //! - Network transport layer for communication between nodes
 //! - Runtime for managing the replication protocol
 
+use crate::multipaxos::storage::CommandLog;
 use crate::multipaxos::{Message, MultiPaxosNode};
 pub use multipaxos::PaxosInstance;
 
@@ -20,7 +21,7 @@ use tracing::{debug, info};
 
 pub mod channel;
 pub mod multipaxos;
-mod storage;
+pub mod storage;
 
 pub use channel::TcpChannel;
 
@@ -194,6 +195,39 @@ where
             next_proposal_id: 0,
         })
     }
+
+    /// Create a runtime with persistent storage. Replays command log to restore state machine.
+    pub fn with_storage(
+        config: SmrConfig,
+        mut state_machine: S,
+        paxos_storage: multipaxos::storage::PaxosStorage<S::Command>,
+        command_log: CommandLog<S::Command>,
+    ) -> Result<Self> {
+        // Replay command log to restore state machine
+        let entries = command_log.replay()?;
+        let last_applied = command_log.last_applied()?;
+        for (_, cmd) in entries {
+            state_machine.apply(cmd)?;
+        }
+        info!(
+            "Recovered state machine: replayed up to instance {}",
+            last_applied
+        );
+
+        let inner = Arc::new(Mutex::new(SmrRuntimeInner::with_storage(
+            config,
+            state_machine,
+            paxos_storage,
+            command_log,
+            last_applied,
+        )?));
+        Ok(Self {
+            inner,
+            pending_proposals: HashMap::new(),
+            next_proposal_id: 0,
+        })
+    }
+
     pub async fn propose(&mut self, v: S::Command) -> Result<oneshot::Receiver<S::Output>> {
         let mut inner = self.inner.lock().await;
         let id = self.next_proposal_id;
@@ -209,6 +243,7 @@ struct SmrRuntimeInner<S: StateMachine> {
     algorithm: Arc<Mutex<MultiPaxosNode<S>>>,
     state_machine: Arc<RwLock<S>>,
     last_applied_command_id: Arc<RwLock<u64>>,
+    command_log: Option<Arc<Mutex<CommandLog<S::Command>>>>,
     outbox: mpsc::Sender<Message<S::Command>>,
     ch_handle: JoinHandle<()>,
 }
@@ -245,6 +280,7 @@ where
                 last_applied_command_id_cl,
                 state_machine_cl,
                 outbox_rx,
+                None,
             )
             .await
         });
@@ -254,6 +290,63 @@ where
             algorithm,
             state_machine,
             last_applied_command_id,
+            command_log: None,
+            outbox: outbox_tx,
+            ch_handle: handle,
+        })
+    }
+
+    pub fn with_storage(
+        config: SmrConfig,
+        state_machine: S,
+        paxos_storage: multipaxos::storage::PaxosStorage<S::Command>,
+        command_log: CommandLog<S::Command>,
+        last_applied: u64,
+    ) -> Result<Self>
+    where
+        <S as StateMachine>::Command: 'static,
+    {
+        debug!("Initializing SmrRuntimeInner with storage recovery");
+        let algorithm = Arc::new(Mutex::new(MultiPaxosNode::with_storage(
+            config.clone(),
+            paxos_storage,
+        )?));
+        let channel: TcpChannel<Message<S::Command>> = TcpChannel::new(
+            config.node_id,
+            config.bind_address.parse()?,
+            config
+                .other_nodes
+                .iter()
+                .map(|(id, addr)| (*id, addr.parse().unwrap()))
+                .collect(),
+        );
+        let state_machine = Arc::new(RwLock::new(state_machine));
+        let (outbox_tx, outbox_rx) = mpsc::channel(100);
+        let algorithm_cl = Arc::clone(&algorithm);
+        let last_applied_command_id = Arc::new(RwLock::new(last_applied));
+        let last_applied_command_id_cl = last_applied_command_id.clone();
+        let state_machine_cl = state_machine.clone();
+        let command_log = Arc::new(Mutex::new(command_log));
+        let command_log_cl = Arc::clone(&command_log);
+
+        let handle = tokio::spawn(async {
+            Self::background(
+                channel,
+                algorithm_cl,
+                last_applied_command_id_cl,
+                state_machine_cl,
+                outbox_rx,
+                Some(command_log_cl),
+            )
+            .await
+        });
+
+        Ok(Self {
+            config,
+            algorithm,
+            state_machine,
+            last_applied_command_id,
+            command_log: Some(command_log),
             outbox: outbox_tx,
             ch_handle: handle,
         })
@@ -264,6 +357,7 @@ where
         last_applied_command_id: Arc<RwLock<u64>>,
         state_machine: Arc<RwLock<S>>,
         mut outbox: mpsc::Receiver<Message<S::Command>>,
+        command_log: Option<Arc<Mutex<CommandLog<S::Command>>>>,
     ) {
         channel.start().await;
         info!("Background loop started, listening for messages");
@@ -281,9 +375,17 @@ where
                     }
                     let mut last_applied_commit = last_applied_command_id.write().await;
                     while let Some((command, sender)) = algorithm_lc.get_commit_id(*last_applied_commit) {
+                        if let Some(ref cl) = command_log {
+                            let mut log = cl.lock().await;
+                            let _ = log.append(*last_applied_commit, &command);
+                        }
                         let mut sm = state_machine.write().await;
                         if let Ok(output) = sm.apply(command) {
                             info!("Applied command for instance {}", *last_applied_commit);
+                            if let Some(ref cl) = command_log {
+                                let mut log = cl.lock().await;
+                                let _ = log.set_last_applied(*last_applied_commit + 1);
+                            }
                             if let Some(sender) = sender {
                                 let _ = sender.send(output);
                             }

@@ -215,7 +215,8 @@ where
         reader.read_exact(&mut msg_buf).await?;
 
         // Deserialize into T
-        let message: T = bincode::deserialize(&msg_buf)?;
+        let (message, _): (T, usize) =
+            bincode::serde::decode_from_slice(&msg_buf, bincode::config::standard())?;
         debug!("read_one_struct() - message: {:?}", message);
         Ok(message)
     }
@@ -249,7 +250,8 @@ where
         );
 
         // Serialize the message with length prefix
-        let serialized = match bincode::serialize(&message) {
+        let serialized = match bincode::serde::encode_to_vec(&message, bincode::config::standard())
+        {
             Ok(data) => data,
             Err(e) => {
                 error!("Failed to serialize message: {:?}", e);

@@ -6,7 +6,9 @@ pub use proposer::Proposer;
 use serde::{Deserialize, Serialize};
 
 use crate::CommandTrait;
+use crate::SerializableCommand;
 use crate::multipaxos::Ballot;
+use crate::multipaxos::storage::{AcceptorState, PaxosStorage};
 
 mod acceptor;
 mod learner;
@@ -32,7 +34,7 @@ where
 
 impl<C> PaxosInstance<C>
 where
-    C: CommandTrait,
+    C: SerializableCommand,
 {
     pub fn new(node_id: u32, quorum_size: u32, total_nodes: u32, instance_id: u64) -> Self {
         assert!(
@@ -51,7 +53,20 @@ where
         }
     }
 
-    pub fn handle_message<T>(&mut self, message: T) -> anyhow::Result<Option<MessageKind<C>>>
+    /// Restore acceptor state from persisted storage.
+    pub fn restore_acceptor(&mut self, state: &AcceptorState<C>) {
+        self.acceptor.max_ballot = state.max_ballot;
+        self.acceptor.max_accepted = state.max_accepted.as_ref().map(|v| MaxAcceptedProposal {
+            ballot: v.ballot,
+            command: v.command.clone(),
+        });
+    }
+
+    pub fn handle_message<T>(
+        &mut self,
+        message: T,
+        mut storage: Option<&mut PaxosStorage<C>>,
+    ) -> anyhow::Result<Option<MessageKind<C>>>
     where
         T: Into<MessageKind<C>>,
         C: CommandTrait,
@@ -67,6 +82,9 @@ where
                 let node_id = self.acceptor.my_id;
                 match &response {
                     MessageKind::PromiseMsg(_) => {
+                        if let Some(ref mut s) = storage {
+                            s.save_promise(self.instance_id, self.acceptor.max_ballot)?;
+                        }
                         let (mvb, mvl) = match &self.acceptor.max_accepted {
                             Some(p) => (Some(p.ballot), Some(format!("{:?}", p.command))),
                             None => (None, None),
@@ -113,6 +131,13 @@ where
                 let node_id = self.acceptor.my_id;
                 match &response {
                     MessageKind::AckAcceptMsg(_) => {
+                        if let Some(ref mut s) = storage {
+                            s.save_accept(
+                                self.instance_id,
+                                self.acceptor.max_ballot,
+                                &self.acceptor.max_accepted.as_ref().unwrap().command,
+                            )?;
+                        }
                         let max_acc = self.acceptor.max_accepted.as_ref().unwrap();
                         super::trace::trace_phase2b(
                             node_id,
@@ -197,10 +222,13 @@ mod tests {
         let to = 5;
         for i in 1..=to {
             let promise: MessageKind<u32> = paxos
-                .handle_message(Prepare {
-                    sender: 100,
-                    ballot: i,
-                })?
+                .handle_message(
+                    Prepare {
+                        sender: 100,
+                        ballot: i,
+                    },
+                    None,
+                )?
                 .unwrap();
             assert!(
                 matches!(promise, MessageKind::PromiseMsg(_),),
@@ -208,45 +236,57 @@ mod tests {
                 promise
             );
         }
-        let propose = paxos.handle_message(RequestCommandToLeader(123))?;
+        let propose = paxos.handle_message(RequestCommandToLeader(123), None)?;
         let proposer_ballot = match &propose {
             Some(MessageKind::PrepareMsg(p)) => p.ballot,
             _ => panic!("expected PrepareMsg, got {:?}", propose),
         };
 
         // lower ballot, acceptor returns nack
-        let promise: Option<MessageKind<u32>> = paxos.handle_message(Prepare {
-            sender: 100,
-            ballot: 1,
-        })?;
+        let promise: Option<MessageKind<u32>> = paxos.handle_message(
+            Prepare {
+                sender: 100,
+                ballot: 1,
+            },
+            None,
+        )?;
         assert!(
             matches!(promise, Some(MessageKind::NackPrepareMsg(_))),
             "{:?}",
             paxos
         );
         // equal ballot, acceptor returns nack
-        let promise: Option<MessageKind<u32>> = paxos.handle_message(Prepare {
-            sender: 100,
-            ballot: to,
-        })?;
+        let promise: Option<MessageKind<u32>> = paxos.handle_message(
+            Prepare {
+                sender: 100,
+                ballot: to,
+            },
+            None,
+        )?;
         assert!(
             matches!(promise, Some(MessageKind::NackPrepareMsg(_))),
             "{:?}",
             paxos
         );
 
-        let resp: Option<MessageKind<u32>> = paxos.handle_message(Promise {
-            sender: 101,
-            ballot: proposer_ballot,
-            max_accepted: None,
-        })?;
+        let resp: Option<MessageKind<u32>> = paxos.handle_message(
+            Promise {
+                sender: 101,
+                ballot: proposer_ballot,
+                max_accepted: None,
+            },
+            None,
+        )?;
         assert_eq!(resp, None, "{:?}", paxos);
 
-        let resp: Option<MessageKind<u32>> = paxos.handle_message(Promise {
-            sender: 102,
-            ballot: proposer_ballot,
-            max_accepted: None,
-        })?;
+        let resp: Option<MessageKind<u32>> = paxos.handle_message(
+            Promise {
+                sender: 102,
+                ballot: proposer_ballot,
+                max_accepted: None,
+            },
+            None,
+        )?;
         assert!(
             matches!(resp, Some(MessageKind::AcceptMsg(_))),
             "{:?}, paxos: {:?}",
@@ -256,25 +296,88 @@ mod tests {
 
         // acceptors should return ack message
         let resp = paxos
-            .handle_message(Accept {
-                sender: 103,
-                ballot: to,
-                command: 123,
-            })?
+            .handle_message(
+                Accept {
+                    sender: 103,
+                    ballot: to,
+                    command: 123,
+                },
+                None,
+            )?
             .unwrap();
         assert!(matches!(resp, MessageKind::AckAcceptMsg(_),), "{:?}", resp);
 
         // when proposer sees a quorum of ack accept, it should issue a new learn message
-        let resp: Option<MessageKind<u32>> = paxos.handle_message(AckAccept {
-            sender: 104,
-            ballot: to,
-        })?;
+        let resp: Option<MessageKind<u32>> = paxos.handle_message(
+            AckAccept {
+                sender: 104,
+                ballot: to,
+            },
+            None,
+        )?;
         assert_eq!(resp, None, "{:?}", paxos);
-        let resp: Option<MessageKind<u32>> = paxos.handle_message(AckAccept {
-            sender: 105,
-            ballot: to,
-        })?;
+        let resp: Option<MessageKind<u32>> = paxos.handle_message(
+            AckAccept {
+                sender: 105,
+                ballot: to,
+            },
+            None,
+        )?;
         assert_eq!(resp, None, "{:?}", paxos);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_paxosinstance_persists_acceptor_state() -> anyhow::Result<()> {
+        use crate::multipaxos::storage::PaxosStorage;
+        use crate::storage::InMemoryStorage;
+
+        let s = InMemoryStorage::new();
+        let mut storage: PaxosStorage<u32> = PaxosStorage::new(Box::new(s));
+        let mut paxos: PaxosInstance<u32> = PaxosInstance::new(1, 2, 3, 0);
+
+        // Promise should persist max_ballot
+        let resp = paxos.handle_message(
+            Prepare {
+                sender: 2,
+                ballot: 5,
+            },
+            Some(&mut storage),
+        )?;
+        assert!(matches!(resp, Some(MessageKind::PromiseMsg(_))));
+        let state = storage.load_acceptor_state(0)?.unwrap();
+        assert_eq!(state.max_ballot, 5);
+        assert!(state.max_accepted.is_none());
+
+        // AckAccept should persist max_accepted
+        let resp = paxos.handle_message(
+            Accept {
+                sender: 2,
+                ballot: 5,
+                command: 42,
+            },
+            Some(&mut storage),
+        )?;
+        assert!(matches!(resp, Some(MessageKind::AckAcceptMsg(_))));
+        let state = storage.load_acceptor_state(0)?.unwrap();
+        assert_eq!(state.max_ballot, 5);
+        let acc = state.max_accepted.unwrap();
+        assert_eq!(acc.ballot, 5);
+        assert_eq!(acc.command, 42);
+
+        // Nack should NOT update storage
+        let resp = paxos.handle_message(
+            Prepare {
+                sender: 3,
+                ballot: 3,
+            },
+            Some(&mut storage),
+        )?;
+        assert!(matches!(resp, Some(MessageKind::NackPrepareMsg(_))));
+        // Storage still has ballot=5, not 3
+        let state = storage.load_acceptor_state(0)?.unwrap();
+        assert_eq!(state.max_ballot, 5);
 
         Ok(())
     }

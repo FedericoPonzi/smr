@@ -6,11 +6,13 @@ use tokio::sync::oneshot;
 use crate::{
     CommitResult, ProposalResult, Result, SmrConfig, StateMachine, StateMachineReplicationAlgorithm,
 };
+use storage::PaxosStorage;
 
+pub mod storage;
 mod synod;
 pub(crate) mod trace;
 
-type Ballot = u32;
+pub(crate) type Ballot = u32;
 
 /// A paxos node is a process that participates in a multipaxos consensus algorithm.
 /// It's the main entry to the paxos algorithm.
@@ -25,6 +27,7 @@ where
     pending_senders: HashMap<u64, oneshot::Sender<S::Output>>,
     next_instance_id: u64,
     id: u32,
+    storage: Option<PaxosStorage<S::Command>>,
 }
 
 impl<S> MultiPaxosNode<S>
@@ -38,7 +41,36 @@ where
             paxos_instances: HashMap::new(),
             pending_senders: HashMap::new(),
             next_instance_id: 0,
+            storage: None,
         }
+    }
+
+    pub fn with_storage(config: SmrConfig, storage: PaxosStorage<S::Command>) -> Result<Self> {
+        let id = config.node_id;
+        let quorum = config.total_nodes / 2 + 1;
+        let total = config.total_nodes;
+
+        let mut paxos_instances = HashMap::new();
+        let mut next_instance_id = 0u64;
+
+        // Restore acceptor state from storage
+        for (instance_id, state) in storage.load_all_acceptor_states()? {
+            let mut instance = PaxosInstance::new(id, quorum, total, instance_id);
+            instance.restore_acceptor(&state);
+            paxos_instances.insert(instance_id, instance);
+            if instance_id >= next_instance_id {
+                next_instance_id = instance_id + 1;
+            }
+        }
+
+        Ok(Self {
+            id,
+            config,
+            paxos_instances,
+            pending_senders: HashMap::new(),
+            next_instance_id,
+            storage: Some(storage),
+        })
     }
 
     pub fn id(&self) -> u32 {
@@ -56,7 +88,7 @@ where
         let mut to_deliver = vec![initial_msg];
         while let Some(msg) = to_deliver.pop() {
             let instance = self.paxos_instances.get_mut(&instance_id).unwrap();
-            if let Some(response) = instance.handle_message(msg)? {
+            if let Some(response) = instance.handle_message(msg, self.storage.as_mut())? {
                 outgoing.push(Message::new(self.id, response.clone(), instance_id));
                 to_deliver.push(response);
             }
@@ -124,7 +156,7 @@ where
 
         let response = {
             let paxos_instance = self.paxos_instances.get_mut(&instance_id).unwrap();
-            paxos_instance.handle_message(paxos_msg.kind())?
+            paxos_instance.handle_message(paxos_msg.kind(), self.storage.as_mut())?
         };
 
         if let Some(response) = response {

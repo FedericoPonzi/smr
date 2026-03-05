@@ -7,6 +7,8 @@ use rocket::http::Status;
 use rocket::response::status;
 use rocket::serde::json::Json;
 use rocket::{Config, State};
+use smr::multipaxos::storage::{CommandLog, PaxosStorage};
+use smr::storage::SledStorage;
 use smr::{SmrConfig, SmrRuntime};
 
 mod kvstore;
@@ -59,8 +61,22 @@ async fn rocket() -> _ {
         .init();
     let config = SmrConfig::from_cli_args().expect("Failed to load config");
     let nid = config.node_id as u16;
-    let smr_runtime = SmrRuntime::new(config, InnerStateMachine::new()).unwrap();
-    let state_kvstore = KeyValueStore::new(smr_runtime); // Initialize Arc<Mutex>
+
+    let data_dir = format!("data/kvstore-node-{}", nid);
+    std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
+
+    let paxos_db = SledStorage::open(std::path::Path::new(&format!("{}/paxos", data_dir)))
+        .expect("Failed to open paxos storage");
+    let log_db = SledStorage::open(std::path::Path::new(&format!("{}/log", data_dir)))
+        .expect("Failed to open command log");
+
+    let paxos_storage = PaxosStorage::new(Box::new(paxos_db));
+    let command_log = CommandLog::new(Box::new(log_db));
+
+    let smr_runtime =
+        SmrRuntime::with_storage(config, InnerStateMachine::new(), paxos_storage, command_log)
+            .unwrap();
+    let state_kvstore = KeyValueStore::new(smr_runtime);
 
     let http_port = std::env::var("ROCKET_PORT")
         .ok()
