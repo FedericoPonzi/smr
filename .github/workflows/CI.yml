@@ -35,3 +35,17 @@ jobs:
       - run: cargo build
 
       - run: cargo test
+
+  test-rocksdb:
+    name: Test (RocksDB)
+    needs: [style]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install RocksDB dependencies
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+
+      - run: cargo test --features rocksdb

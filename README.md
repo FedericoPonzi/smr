@@ -36,14 +36,16 @@ Set `RUST_LOG=info` (or `RUST_LOG=smr=info`) to see the Paxos protocol in action
 
 ### Distributed key-value store
 
+The kvstore example uses [sled](https://docs.rs/sled) for persistent storage — data survives restarts. Storage is written to `data/kvstore-node-{id}/`.
+
 ```bash
 # Start a 3-node cluster (in separate terminals, or use the helper script)
 ./run-example.sh kvstore
 
 # Or manually:
-cargo run --example kvstore -- 0 5000,5001,5002 &
-cargo run --example kvstore -- 1 5000,5001,5002 &
-cargo run --example kvstore -- 2 5000,5001,5002 &
+cargo run --example kvstore --features sled -- 0 5000,5001,5002 &
+cargo run --example kvstore --features sled -- 1 5000,5001,5002 &
+cargo run --example kvstore --features sled -- 2 5000,5001,5002 &
 
 # Write to any node, read from any node
 curl -X POST -d "hello" http://localhost:8080/mykey

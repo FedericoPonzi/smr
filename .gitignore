@@ -5,3 +5,4 @@ tla/tla2tools.jar
 tla/**/states/
 tla/**/TraceData.tla
 *.ndjson
+data/
