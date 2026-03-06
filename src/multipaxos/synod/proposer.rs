@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::fmt::Debug;
 
 use log::{debug, info};
@@ -18,7 +17,8 @@ where
 {
     promises: u32,
     nacks: u32,
-    max_accepted_proposals: HashSet<MaxAcceptedProposal<C>>,
+    // Vec (not HashSet) for deterministic max_by_key iteration order.
+    max_accepted_proposals: Vec<MaxAcceptedProposal<C>>,
     value: C,
 }
 
@@ -56,7 +56,7 @@ impl<S> StateWrapper<S> {
                 state: ProposalState {
                     promises: 0,
                     nacks: 0,
-                    max_accepted_proposals: HashSet::new(),
+                    max_accepted_proposals: Vec::new(),
                     value,
                 },
                 ballot: self.ballot,
@@ -77,7 +77,7 @@ where
             return (None, InnerState::Proposal(self.clone()));
         }
         if let Some(accepted) = response.max_accepted {
-            self.state.max_accepted_proposals.insert(accepted);
+            self.state.max_accepted_proposals.push(accepted);
         }
         self.state.promises += 1;
         if self.state.promises >= self.quorum_size {

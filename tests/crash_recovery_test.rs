@@ -105,20 +105,23 @@ fn deliver_all(
 
 /// Run a targeted crash-recovery simulation designed to trigger the violation.
 ///
-/// Strategy:
-/// 1. Node 0 proposes value A for instance 0 — deliver Prepare to all 3 nodes,
-///    so all 3 acceptors promise ballot B0.
-/// 2. Deliver Accept(B0, A) only to nodes 0 and 2 — they accept value A.
-///    Node 1 hasn't accepted yet.
-/// 3. CRASH node 2 (which accepted A at ballot B0).
-/// 4. Restart node 2 WITHOUT persistence — it forgets its promise and accept.
-/// 5. Node 1 proposes value B for the same instance 0 with a higher ballot B1.
-///    Deliver Prepare(B1) to nodes 1 and 2. Node 2 (fresh) promises B1.
-///    Node 1 promised B1. That's a quorum of promises for B1 with no prior accepted value reported.
-/// 6. Deliver Accept(B1, B) to nodes 1 and 2. Both accept value B.
-/// 7. Now node 0 learned A, nodes 1&2 can learn B → AGREEMENT VIOLATION.
+/// Strategy (deterministic — no random message drops):
+/// 1. Node 0 proposes value A for instance 0. Deliver Prepare ONLY to Node 2
+///    (not Node 1, so Node 1's next_instance_id stays at 0).
+/// 2. Deliver Promise from Node 2 back to Node 0. Node 0 reaches quorum (self + Node 2).
+///    Accept(ballot=3, A) is emitted and self-delivered.
+/// 3. Deliver Accept to Node 2 only. Node 2 accepts. AckAccept back to Node 0.
+///    Node 0 reaches quorum of accepts → emits Learn(A).
+/// 4. Deliver Learn to Node 2 → re-broadcasts → deliver back to Node 0. Node 0 learns A.
+/// 5. CRASH Node 2.
+/// 6. Restart Node 2 WITHOUT persistence → state lost.
+/// 7. Node 1 proposes value B. Since next_instance_id=0, it gets instance 0 (same instance!).
+///    Deliver Prepare ONLY to Node 2 (fresh). Node 2 promises without
+///    reporting A (lost). Node 1 gets quorum without discovering A → proposes B.
+/// 8. Complete Node 1's protocol with Node 2. Node 1 learns B.
+/// 9. Node 0 has A, Node 1 has B → AGREEMENT VIOLATION.
 fn run_targeted_crash_simulation(seed: u64, use_persistence: bool) -> (Vec<String>, String) {
-    let mut rng = StdRng::seed_from_u64(seed);
+    let _ = seed; // deterministic test, seed not used
     let mut log = String::new();
 
     let storages: Vec<Arc<Mutex<InMemoryStorage>>> = (0..3)
@@ -132,66 +135,61 @@ fn run_targeted_crash_simulation(seed: u64, use_persistence: bool) -> (Vec<Strin
         })
         .collect();
 
-    // === Step 1: Node 0 proposes value A ===
+    // === Phase 1: Node 0 proposes A for instance 0 ===
     let cmd_a = Cmd::Set("key".into(), "A".into());
     log.push_str(&format!("Step 1: Node 0 proposes {:?}\n", cmd_a));
     let (propose_msgs, _rx_a) = nodes[0].propose(cmd_a.clone()).unwrap();
 
-    // propose_msgs includes the Prepare broadcast. Deliver to nodes 1 and 2.
-    // (Node 0 already self-delivered via propose())
-    let mut phase1_responses = Vec::new();
+    // Deliver Prepare ONLY to Node 2 (keep Node 1 isolated so next_instance_id stays 0)
+    let mut promises = Vec::new();
     for msg in &propose_msgs {
-        // Deliver to node 1
-        phase1_responses.extend(deliver_to(&mut nodes, msg, 1));
-        // Deliver to node 2
-        phase1_responses.extend(deliver_to(&mut nodes, msg, 2));
+        promises.extend(deliver_to(&mut nodes, msg, 2));
     }
     log.push_str(&format!(
-        "  All 3 nodes received Prepare. Got {} responses (Promises)\n",
-        phase1_responses.len()
+        "  Delivered Prepare to Node 2 only. {} Promise responses\n",
+        promises.len()
     ));
 
-    // === Step 2: Deliver Promise responses back to node 0 (the proposer) ===
-    // This should trigger node 0 to send Accept messages once it has a quorum
-    let mut accept_msgs = Vec::new();
-    for msg in &phase1_responses {
-        let responses = deliver_to(&mut nodes, msg, 0);
-        for r in &responses {
-            // Also self-deliver at node 0 (the broadcast includes self)
-            accept_msgs.extend(deliver_to(&mut nodes, r, 0));
-        }
-        accept_msgs.extend(responses);
+    // Deliver Promise from Node 2 to Node 0 → triggers Accept
+    let mut accept_phase_msgs = Vec::new();
+    for msg in &promises {
+        accept_phase_msgs.extend(deliver_to(&mut nodes, msg, 0));
     }
     log.push_str(&format!(
-        "  Delivered Promises to node 0. Got {} Accept-phase messages\n",
-        accept_msgs.len()
+        "  Delivered Promise to Node 0. {} Accept-phase messages\n",
+        accept_phase_msgs.len()
     ));
 
-    // === Step 3: Deliver Accept messages only to node 2 (not node 1) ===
-    // Node 0 already self-delivered. Node 2 accepts. Node 1 is isolated.
+    // Deliver Accept to Node 2 only → AckAccept
+    let mut ack_msgs = Vec::new();
+    for msg in &accept_phase_msgs {
+        ack_msgs.extend(deliver_to(&mut nodes, msg, 2));
+    }
+
+    // Deliver AckAccept from Node 2 to Node 0 → triggers Learn
     let mut learn_msgs = Vec::new();
-    for msg in &accept_msgs {
-        // Only deliver to node 2
-        learn_msgs.extend(deliver_to(&mut nodes, msg, 2));
+    for msg in &ack_msgs {
+        learn_msgs.extend(deliver_to(&mut nodes, msg, 0));
     }
-    log.push_str(&format!(
-        "  Delivered Accept to node 2 only. Node 1 isolated. {} responses\n",
-        learn_msgs.len()
-    ));
 
-    // Deliver learn messages from node 2's AckAccept back to node 0
+    // Deliver Learn to Node 2 → re-broadcasts
+    let mut rebroadcasts = Vec::new();
     for msg in &learn_msgs {
+        rebroadcasts.extend(deliver_to(&mut nodes, msg, 2));
+    }
+
+    // Deliver re-broadcast back to Node 0 → Node 0 learns A
+    for msg in &rebroadcasts {
         let _ = deliver_to(&mut nodes, msg, 0);
     }
 
-    // Check what node 0 learned so far
     let node0_learned = nodes[0].get_commit_id(0);
     log.push_str(&format!(
-        "  Node 0 learned for instance 0: {:?}\n",
+        "  Node 0 learned instance 0: {:?}\n",
         node0_learned.as_ref().map(|(cmd, _)| cmd)
     ));
 
-    // === Step 4: CRASH node 2 ===
+    // === CRASH and RESTART Node 2 ===
     log.push_str("\n=== CRASH: Node 2 dies ===\n");
     {
         let st = storages[2].lock().unwrap();
@@ -206,7 +204,6 @@ fn run_targeted_crash_simulation(seed: u64, use_persistence: bool) -> (Vec<Strin
         }
     }
 
-    // === Step 5: RESTART node 2 ===
     if use_persistence {
         log.push_str("\n=== RESTART: Node 2 recovers from storage ===\n");
         let ps = PaxosStorage::new(Box::new(SharedStorage(storages[2].clone())));
@@ -216,42 +213,57 @@ fn run_targeted_crash_simulation(seed: u64, use_persistence: bool) -> (Vec<Strin
         nodes[2] = MultiPaxosNode::new(make_config(2));
     }
 
-    // === Step 6: Node 1 proposes value B for a new instance ===
-    // But due to instance_id tracking, it will get a different instance.
-    // The real danger is for the SAME instance. So instead, we simulate
-    // node 1 receiving a late Prepare for the same instance with a higher ballot.
-    // We do this by having node 1 also propose — it may reuse instance 0 or get a new one.
-    // Actually, let's deliver all remaining messages fully and then check.
-
-    // Deliver everything that's still pending, plus have node 1 propose
+    // === Phase 2: Node 1 proposes B for instance 0 ===
+    // Node 1 never saw any messages, so next_instance_id=0 → gets same instance!
     let cmd_b = Cmd::Set("key".into(), "B".into());
-    log.push_str(&format!("\nStep 6: Node 1 proposes {:?}\n", cmd_b));
+    log.push_str(&format!(
+        "\nStep 2: Node 1 proposes {:?} (instance 0)\n",
+        cmd_b
+    ));
     let (propose_msgs_b, _rx_b) = nodes[1].propose(cmd_b.clone()).unwrap();
 
-    // Deliver all pending messages fully
-    let mut pending = propose_msgs_b;
-    let mut rounds = 0;
-    while !pending.is_empty() && rounds < 30 {
-        pending.shuffle(&mut rng);
-        let mut next = Vec::new();
-        for msg in &pending {
-            let sender = msg.sender_id();
-            for node in nodes.iter_mut() {
-                if node.id() == sender {
-                    continue;
-                }
-                if rng.random_bool(0.05) {
-                    continue;
-                }
-                if let Ok(responses) = node.handle_message(msg.clone()) {
-                    next.extend(responses);
-                }
-            }
-        }
-        pending = next;
-        rounds += 1;
+    // Deliver Node 1's Prepare ONLY to Node 2 (isolate from Node 0)
+    let mut promises_b = Vec::new();
+    for msg in &propose_msgs_b {
+        promises_b.extend(deliver_to(&mut nodes, msg, 2));
     }
-    log.push_str(&format!("  Delivered messages for {} rounds\n\n", rounds));
+    log.push_str(&format!(
+        "  Delivered Prepare to Node 2 only. {} responses\n",
+        promises_b.len()
+    ));
+
+    // Deliver Promise from Node 2 to Node 1 → triggers Accept
+    let mut accept_phase_b = Vec::new();
+    for msg in &promises_b {
+        accept_phase_b.extend(deliver_to(&mut nodes, msg, 1));
+    }
+
+    // Deliver Accept to Node 2 → AckAccept
+    let mut ack_msgs_b = Vec::new();
+    for msg in &accept_phase_b {
+        ack_msgs_b.extend(deliver_to(&mut nodes, msg, 2));
+    }
+
+    // Deliver AckAccept from Node 2 to Node 1 → Learn
+    let mut learn_msgs_b = Vec::new();
+    for msg in &ack_msgs_b {
+        learn_msgs_b.extend(deliver_to(&mut nodes, msg, 1));
+    }
+
+    // Deliver Learn to Node 2 → re-broadcast → deliver to Node 1 → Node 1 learns B
+    let mut rebroadcasts_b = Vec::new();
+    for msg in &learn_msgs_b {
+        rebroadcasts_b.extend(deliver_to(&mut nodes, msg, 2));
+    }
+    for msg in &rebroadcasts_b {
+        let _ = deliver_to(&mut nodes, msg, 1);
+    }
+
+    let node1_learned = nodes[1].get_commit_id(0);
+    log.push_str(&format!(
+        "  Node 1 learned instance 0: {:?}\n\n",
+        node1_learned.as_ref().map(|(cmd, _)| cmd)
+    ));
 
     // === Check agreement ===
     let mut violations = Vec::new();
@@ -453,52 +465,24 @@ fn run_crash_simulation(seed: u64, use_persistence: bool) -> (Vec<String>, Strin
 /// acceptor can cause agreement violations.
 #[test]
 fn test_crash_without_persistence_finds_violations() {
-    // First try the targeted simulation
-    let mut found_violation = false;
-    let mut violation_log = String::new();
-    let mut violation_seed = 0u64;
-
-    for seed in 0..100 {
-        let (violations, log) = run_targeted_crash_simulation(seed, false);
-        if !violations.is_empty() {
-            found_violation = true;
-            violation_log = log;
-            violation_seed = seed;
-            break;
-        }
-    }
-
-    // Fall back to randomized simulation
-    if !found_violation {
-        for seed in 0..10000 {
-            let (violations, log) = run_crash_simulation(seed, false);
-            if !violations.is_empty() {
-                found_violation = true;
-                violation_log = log;
-                violation_seed = seed + 100_000; // offset to distinguish
-                break;
-            }
-        }
-    }
+    // The targeted simulation is deterministic and always finds a violation
+    // without persistence (Node 2 loses state, enabling a conflicting decision).
+    let (violations, log) = run_targeted_crash_simulation(0, false);
 
     println!("\n{}", "=".repeat(70));
-    if found_violation {
-        println!(
-            "CRASH WITHOUT PERSISTENCE — Agreement violation found at seed={}",
-            violation_seed
-        );
+    if !violations.is_empty() {
+        println!("CRASH WITHOUT PERSISTENCE — Agreement violation found (targeted)");
         println!("{}\n", "=".repeat(70));
-        println!("{}", violation_log);
+        println!("{}", log);
     } else {
-        println!("No violation found in 10100 seeds.");
-        println!("The violation scenario requires very specific message ordering.");
+        println!("No violation found in targeted simulation.");
         println!("{}", "=".repeat(70));
+        println!("{}", log);
     }
 
-    // We expect to find a violation — that's the whole point
     assert!(
-        found_violation,
-        "Expected to find an agreement violation without persistence, but none found in 10100 seeds"
+        !violations.is_empty(),
+        "Expected to find an agreement violation without persistence in the targeted simulation"
     );
 }
 
@@ -506,25 +490,27 @@ fn test_crash_without_persistence_finds_violations() {
 /// even with node crashes and restarts.
 #[test]
 fn test_crash_with_persistence_preserves_safety() {
-    let num_seeds = 2000;
     let mut all_violations = Vec::new();
 
+    // Targeted simulation (deterministic, run once)
+    let (v1, _) = run_targeted_crash_simulation(0, true);
+    all_violations.extend(v1);
+
+    // Randomized simulations
+    let num_seeds = 2000;
     for seed in 0..num_seeds {
-        // Test both targeted and randomized
-        let (v1, _) = run_targeted_crash_simulation(seed, true);
         let (v2, _) = run_crash_simulation(seed, true);
-        all_violations.extend(v1);
         all_violations.extend(v2);
     }
 
     assert!(
         all_violations.is_empty(),
-        "Found {} agreement violations WITH persistence across {} seeds!",
+        "Found {} agreement violations WITH persistence across {} randomized seeds!",
         all_violations.len(),
         num_seeds
     );
     println!(
-        "✓ {} seeds tested with crash+recovery (persistence enabled): no agreement violations",
+        "✓ targeted + {} randomized seeds tested with crash+recovery (persistence enabled): no agreement violations",
         num_seeds
     );
 }
