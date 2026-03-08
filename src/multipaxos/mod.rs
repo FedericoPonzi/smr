@@ -16,8 +16,6 @@ pub(crate) type Ballot = u32;
 
 /// A paxos node is a process that participates in a multipaxos consensus algorithm.
 /// It's the main entry to the paxos algorithm.
-/// TODO: I need to know if a value could still be potentially included in the current round, or if we should start negotiating the next round.
-/// TODO: actually it would be much easier to just use a leader and let them handle it
 pub struct MultiPaxosNode<S>
 where
     S: StateMachine,
@@ -28,6 +26,8 @@ where
     next_instance_id: u64,
     id: u32,
     storage: Option<PaxosStorage<S::Command>>,
+    /// Ballot of the last round this node won. `Some` means we are the leader.
+    leader_ballot: Option<Ballot>,
 }
 
 impl<S> MultiPaxosNode<S>
@@ -42,6 +42,7 @@ where
             pending_senders: HashMap::new(),
             next_instance_id: 0,
             storage: None,
+            leader_ballot: None,
         }
     }
 
@@ -70,11 +71,17 @@ where
             pending_senders: HashMap::new(),
             next_instance_id,
             storage: Some(storage),
+            leader_ballot: None,
         })
     }
 
     pub fn id(&self) -> u32 {
         self.id
+    }
+
+    /// Returns the current leader ballot, if this node is the leader.
+    pub fn leader_ballot(&self) -> Option<Ballot> {
+        self.leader_ballot
     }
 
     /// Process a message locally through the PaxosInstance and cascade any responses.
@@ -137,6 +144,8 @@ where
         let mut outgoing_messages = Vec::new();
 
         let instance_id = paxos_msg.instance_id();
+        let is_incoming_learn = matches!(paxos_msg.clone().kind(), MessageKind::LearnMsg(_));
+
         info!(
             "Node {}: received network message for instance {}",
             self.id, instance_id
@@ -158,6 +167,28 @@ where
             let paxos_instance = self.paxos_instances.get_mut(&instance_id).unwrap();
             paxos_instance.handle_message(paxos_msg.kind(), self.storage.as_mut())?
         };
+
+        if let Some(ref response) = response {
+            // Our proposer produced a Learn (from AckAccept quorum) → we won this round
+            if !is_incoming_learn && let MessageKind::LearnMsg(learn) = response {
+                info!(
+                    "Node {}: won round for instance {} with ballot {}",
+                    self.id, instance_id, learn.ballot
+                );
+                self.leader_ballot = Some(learn.ballot);
+            }
+            // We promised a higher ballot → our old leader ballot is no longer valid
+            if let MessageKind::PromiseMsg(promise) = response
+                && let Some(lb) = self.leader_ballot
+                && promise.ballot > lb
+            {
+                info!(
+                    "Node {}: lost leadership (promised ballot {} > leader ballot {})",
+                    self.id, promise.ballot, lb
+                );
+                self.leader_ballot = None;
+            }
+        }
 
         if let Some(response) = response {
             outgoing_messages.push(Message::new(self.id, response.clone(), instance_id));
