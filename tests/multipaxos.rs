@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use smr::multipaxos::MultiPaxosNode;
+use smr::multipaxos::{MessageKind, MultiPaxosNode};
 use smr::{SmrConfig, StateMachine, StateMachineReplicationAlgorithm};
 use tracing::debug;
 
@@ -163,5 +163,199 @@ fn test_no_leader_without_round_completion() {
     assert!(
         nodes[0].leader_ballot().is_none(),
         "Node should NOT be leader until a full round completes"
+    );
+}
+
+/// Run a full Paxos round: propose on `proposer_idx`, deliver through all phases.
+fn run_full_round(nodes: &mut [MultiPaxosNode<MySM>], proposer_idx: usize, cmd: Command) {
+    let (msgs, _rx) = nodes[proposer_idx].propose(cmd).unwrap();
+    let r1 = deliver_to_others(nodes, &msgs);
+    let r2 = deliver_to(&mut nodes[proposer_idx], &r1);
+    let r3 = deliver_to_others(nodes, &r2);
+    let r4 = deliver_to(&mut nodes[proposer_idx], &r3);
+    // Deliver Learn to all peers + re-broadcasts back for quorum
+    let r5 = deliver_to_others(nodes, &r4);
+    let _ = deliver_to_others(nodes, &r5);
+}
+
+/// Non-leader propose() should return a RequestCommandToLeader message.
+#[test]
+fn test_non_leader_propose_forwards() {
+    let mut nodes: Vec<MultiPaxosNode<MySM>> = (0..3u32)
+        .map(|id| MultiPaxosNode::new(make_config(id)))
+        .collect();
+
+    // Node 0 wins a round → becomes leader
+    run_full_round(&mut nodes, 0, Command::Set(1));
+    assert!(nodes[0].leader_ballot().is_some());
+    assert!(nodes[1].leader_ballot().is_none());
+
+    // Node 1 (non-leader) calls propose → should get a forward message, not Prepare
+    let (msgs, _rx) = nodes[1].propose(Command::Set(99)).unwrap();
+    assert!(!msgs.is_empty());
+    let has_forward = msgs
+        .iter()
+        .any(|m| matches!(m.clone().kind(), MessageKind::RequestCommandToLeader(_)));
+    assert!(
+        has_forward,
+        "Non-leader should produce RequestCommandToLeader, got: {:?}",
+        msgs.iter().map(|m| format!("{:?}", m)).collect::<Vec<_>>()
+    );
+}
+
+/// Leader handles a forwarded RequestCommandToLeader and runs Paxos for it.
+#[test]
+fn test_leader_handles_forwarded_proposal() {
+    let mut nodes: Vec<MultiPaxosNode<MySM>> = (0..3u32)
+        .map(|id| MultiPaxosNode::new(make_config(id)))
+        .collect();
+
+    // Node 0 wins a round → becomes leader
+    run_full_round(&mut nodes, 0, Command::Set(1));
+    assert!(nodes[0].leader_ballot().is_some());
+
+    // Node 1 (non-leader) proposes → gets forward message
+    let (forward_msgs, _rx) = nodes[1].propose(Command::Set(99)).unwrap();
+
+    // Deliver forward message to leader (Node 0) → should produce Prepare
+    let leader_msgs = deliver_to(&mut nodes[0], &forward_msgs);
+    let has_prepare = leader_msgs
+        .iter()
+        .any(|m| matches!(m.clone().kind(), MessageKind::PrepareMsg(_)));
+    assert!(
+        has_prepare,
+        "Leader should start Paxos for the forwarded command"
+    );
+
+    // Complete the round: deliver through all phases
+    let r1 = deliver_to_others(&mut nodes, &leader_msgs);
+    let r2 = deliver_to(&mut nodes[0], &r1);
+    let r3 = deliver_to_others(&mut nodes, &r2);
+    let r4 = deliver_to(&mut nodes[0], &r3);
+    let r5 = deliver_to_others(&mut nodes, &r4);
+    // Learn re-broadcasts need one more round for quorum
+    let _ = deliver_to_others(&mut nodes, &r5);
+
+    // Debug: find which instance the leader used
+    let forwarded_instance = leader_msgs
+        .iter()
+        .find_map(|m| {
+            if matches!(m.clone().kind(), MessageKind::PrepareMsg(_)) {
+                Some(m.instance_id())
+            } else {
+                None
+            }
+        })
+        .expect("should have a Prepare with instance_id");
+
+    // The forwarded proposal should have been learned
+    let leader_learned = nodes[0].get_commit_id(forwarded_instance);
+    assert!(
+        leader_learned.is_some(),
+        "Leader should have committed the forwarded value (instance {})",
+        forwarded_instance
+    );
+    let follower_learned = nodes[1].get_commit_id(forwarded_instance);
+    assert!(
+        follower_learned.is_some(),
+        "Follower should have learned the value via Learn broadcast (instance {})",
+        forwarded_instance
+    );
+}
+
+/// Leader propose() still works directly (not forwarded).
+#[test]
+fn test_leader_propose_still_direct() {
+    let mut nodes: Vec<MultiPaxosNode<MySM>> = (0..3u32)
+        .map(|id| MultiPaxosNode::new(make_config(id)))
+        .collect();
+
+    // Node 0 wins a round → becomes leader
+    run_full_round(&mut nodes, 0, Command::Set(1));
+    assert!(nodes[0].leader_ballot().is_some());
+
+    // Leader proposes again → should produce Prepare directly, not RequestCommandToLeader
+    let (msgs, _rx) = nodes[0].propose(Command::Set(2)).unwrap();
+    let has_prepare = msgs
+        .iter()
+        .any(|m| matches!(m.clone().kind(), MessageKind::PrepareMsg(_)));
+    assert!(
+        has_prepare,
+        "Leader should produce Prepare directly when proposing"
+    );
+}
+
+/// Leader receives two proposals back-to-back — each gets a distinct instance.
+#[test]
+fn test_leader_sequential_proposals_get_distinct_instances() {
+    let mut nodes: Vec<MultiPaxosNode<MySM>> = (0..3u32)
+        .map(|id| MultiPaxosNode::new(make_config(id)))
+        .collect();
+
+    run_full_round(&mut nodes, 0, Command::Set(1));
+    assert!(nodes[0].leader_ballot().is_some());
+
+    // Two proposals on the leader
+    let (msgs_a, _rx_a) = nodes[0].propose(Command::Set(10)).unwrap();
+    let (msgs_b, _rx_b) = nodes[0].propose(Command::Set(20)).unwrap();
+
+    // Extract instance IDs from the Prepare messages
+    let instance_a = msgs_a
+        .iter()
+        .find_map(|m| match m.clone().kind() {
+            MessageKind::PrepareMsg(_) => Some(m.instance_id()),
+            _ => None,
+        })
+        .unwrap();
+    let instance_b = msgs_b
+        .iter()
+        .find_map(|m| match m.clone().kind() {
+            MessageKind::PrepareMsg(_) => Some(m.instance_id()),
+            _ => None,
+        })
+        .unwrap();
+
+    assert_ne!(
+        instance_a, instance_b,
+        "Sequential proposals must get different instance IDs"
+    );
+}
+
+/// Two non-leaders forward to leader — leader assigns distinct instances for each.
+#[test]
+fn test_two_forwarded_proposals_get_distinct_instances() {
+    let mut nodes: Vec<MultiPaxosNode<MySM>> = (0..3u32)
+        .map(|id| MultiPaxosNode::new(make_config(id)))
+        .collect();
+
+    run_full_round(&mut nodes, 0, Command::Set(1));
+    assert!(nodes[0].leader_ballot().is_some());
+
+    // Node 1 and Node 2 both forward proposals
+    let (fwd1, _rx1) = nodes[1].propose(Command::Set(10)).unwrap();
+    let (fwd2, _rx2) = nodes[2].propose(Command::Set(20)).unwrap();
+
+    // Leader handles both forwarded proposals
+    let leader_msgs_a = deliver_to(&mut nodes[0], &fwd1);
+    let leader_msgs_b = deliver_to(&mut nodes[0], &fwd2);
+
+    let instance_a = leader_msgs_a
+        .iter()
+        .find_map(|m| match m.clone().kind() {
+            MessageKind::PrepareMsg(_) => Some(m.instance_id()),
+            _ => None,
+        })
+        .unwrap();
+    let instance_b = leader_msgs_b
+        .iter()
+        .find_map(|m| match m.clone().kind() {
+            MessageKind::PrepareMsg(_) => Some(m.instance_id()),
+            _ => None,
+        })
+        .unwrap();
+
+    assert_ne!(
+        instance_a, instance_b,
+        "Forwarded proposals must get different instance IDs"
     );
 }

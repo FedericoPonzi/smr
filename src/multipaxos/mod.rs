@@ -28,6 +28,10 @@ where
     storage: Option<PaxosStorage<S::Command>>,
     /// Ballot of the last round this node won. `Some` means we are the leader.
     leader_ballot: Option<Ballot>,
+    /// Node ID of the known leader (set when we see them win a round).
+    known_leader_id: Option<u32>,
+    /// Senders for proposals forwarded to the leader, keyed by command.
+    forwarded_senders: Vec<(S::Command, oneshot::Sender<S::Output>)>,
 }
 
 impl<S> MultiPaxosNode<S>
@@ -43,6 +47,8 @@ where
             next_instance_id: 0,
             storage: None,
             leader_ballot: None,
+            known_leader_id: None,
+            forwarded_senders: Vec::new(),
         }
     }
 
@@ -72,6 +78,8 @@ where
             next_instance_id,
             storage: Some(storage),
             leader_ballot: None,
+            known_leader_id: None,
+            forwarded_senders: Vec::new(),
         })
     }
 
@@ -110,6 +118,22 @@ where
 {
     type SMRMessage = Message<S::Command>;
     fn propose(&mut self, cmd: S::Command) -> Result<ProposalResult<S>> {
+        // Forward to leader if we know someone else is leading
+        if self.leader_ballot.is_none() && self.known_leader_id.is_some() {
+            info!(
+                "Node {}: not leader, forwarding proposal to node {:?}",
+                self.id, self.known_leader_id
+            );
+            let (sender, receiver) = oneshot::channel();
+            let forward_msg = Message::new(
+                self.id,
+                MessageKind::RequestCommandToLeader(cmd.clone()),
+                0, // instance_id irrelevant — leader assigns it
+            );
+            self.forwarded_senders.push((cmd, sender));
+            return Ok((vec![forward_msg], receiver));
+        }
+
         let instance_id = self.next_instance_id;
         self.next_instance_id += 1;
 
@@ -141,10 +165,33 @@ where
         &mut self,
         paxos_msg: Message<S::Command>,
     ) -> Result<Vec<Message<S::Command>>> {
+        // Intercept forwarded proposals at this level — leader assigns instance_id.
+        if let MessageKind::RequestCommandToLeader(cmd) = paxos_msg.clone().kind() {
+            if self.leader_ballot.is_some() {
+                info!(
+                    "Node {}: handling forwarded proposal cmd={:?}",
+                    self.id, cmd
+                );
+                let (msgs, _rx) = self.propose(cmd)?;
+                return Ok(msgs);
+            }
+            // Not leader either — drop or re-forward (drop for now)
+            info!(
+                "Node {}: received forwarded proposal but not leader, dropping",
+                self.id
+            );
+            return Ok(vec![]);
+        }
+
         let mut outgoing_messages = Vec::new();
 
         let instance_id = paxos_msg.instance_id();
-        let is_incoming_learn = matches!(paxos_msg.clone().kind(), MessageKind::LearnMsg(_));
+        let msg_kind = paxos_msg.kind();
+        let is_incoming_learn = matches!(&msg_kind, MessageKind::LearnMsg(_));
+        let incoming_learn_sender = match &msg_kind {
+            MessageKind::LearnMsg(learn) => Some(learn.sender),
+            _ => None,
+        };
 
         info!(
             "Node {}: received network message for instance {}",
@@ -165,7 +212,7 @@ where
 
         let response = {
             let paxos_instance = self.paxos_instances.get_mut(&instance_id).unwrap();
-            paxos_instance.handle_message(paxos_msg.kind(), self.storage.as_mut())?
+            paxos_instance.handle_message(msg_kind, self.storage.as_mut())?
         };
 
         if let Some(ref response) = response {
@@ -176,6 +223,7 @@ where
                     self.id, instance_id, learn.ballot
                 );
                 self.leader_ballot = Some(learn.ballot);
+                self.known_leader_id = None; // we are the leader
             }
             // We promised a higher ballot → our old leader ballot is no longer valid
             if let MessageKind::PromiseMsg(promise) = response
@@ -190,6 +238,13 @@ where
             }
         }
 
+        // Track known leader from incoming Learn messages from other nodes
+        if let Some(proposer_id) = incoming_learn_sender
+            && proposer_id != self.id
+        {
+            self.known_leader_id = Some(proposer_id);
+        }
+
         if let Some(response) = response {
             outgoing_messages.push(Message::new(self.id, response.clone(), instance_id));
             self.self_deliver(instance_id, response, &mut outgoing_messages)?;
@@ -197,11 +252,17 @@ where
         Ok(outgoing_messages)
     }
 
-    // actively push a value.
     fn get_commit_id(&mut self, id: u64) -> Option<CommitResult<S>> {
         let instance = self.paxos_instances.get(&id)?;
         let command = instance.get_value()?;
-        let sender = self.pending_senders.remove(&id);
+        let sender = self.pending_senders.remove(&id).or_else(|| {
+            // Match forwarded proposal by command equality
+            let pos = self
+                .forwarded_senders
+                .iter()
+                .position(|(cmd, _)| *cmd == command)?;
+            Some(self.forwarded_senders.remove(pos).1)
+        });
         Some((command, sender))
     }
 }
