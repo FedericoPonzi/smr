@@ -42,7 +42,8 @@ pub enum MessageKind<T>
 where
     T: CommandTrait,
 {
-    RequestCommandToLeader(T),
+    RequestCommandToLeader { cmd: T, forward_id: u64 },
+    ForwardAck { forward_id: u64, instance_id: u64 },
     PrepareMsg(Prepare),
     PromiseMsg(Promise<T>),
     AcceptMsg(Accept<T>),

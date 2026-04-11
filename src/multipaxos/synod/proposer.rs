@@ -68,6 +68,36 @@ impl<S> StateWrapper<S> {
     }
 }
 
+impl StateWrapper<InitialState> {
+    pub(crate) fn new_accept<C>(
+        &self,
+        ballot: Ballot,
+        value: C,
+    ) -> (Option<MessageKind<C>>, InnerState<C>)
+    where
+        C: CommandTrait,
+    {
+        (
+            Some(MessageKind::AcceptMsg(Accept {
+                sender: self.proposer_id,
+                ballot,
+                command: value.clone(),
+            })),
+            InnerState::Accepting(StateWrapper {
+                state: AcceptingState {
+                    accepts: 0,
+                    nacks: 0,
+                    value,
+                },
+                ballot,
+                proposer_id: self.proposer_id,
+                quorum_size: self.quorum_size,
+                total_nodes: self.total_nodes,
+            }),
+        )
+    }
+}
+
 impl<C> StateWrapper<ProposalState<C>>
 where
     C: CommandTrait,
@@ -187,13 +217,20 @@ where
             InnerState::Learning(state_wrapper) => state_wrapper.new_prepare(value),
         }
     }
+    pub fn new_accept(&self, ballot: Ballot, value: C) -> (Option<MessageKind<C>>, InnerState<C>) {
+        match self {
+            InnerState::Initial(s) => s.new_accept(ballot, value),
+            InnerState::Learning(s) => s.new_accept(ballot, value),
+            other => panic!("new_accept called in unexpected state: {:?}", other),
+        }
+    }
     pub fn handle_message(
         self,
         message: MessageKind<C>,
     ) -> (Option<MessageKind<C>>, InnerState<C>) {
         match (self, message) {
-            (InnerState::Initial(mut state), MessageKind::RequestCommandToLeader(val)) => {
-                wrap_message(state.new_prepare(val))
+            (InnerState::Initial(mut state), MessageKind::RequestCommandToLeader { cmd, .. }) => {
+                wrap_message(state.new_prepare(cmd))
             }
             (InnerState::Proposal(mut state_wrapper), MessageKind::PromiseMsg(promise)) => {
                 wrap_message(state_wrapper.handle_promise(promise))
@@ -260,6 +297,11 @@ where
     }
     pub fn new_prepare(&mut self, value: C) -> MessageKind<C> {
         let (msg, new_state) = self.inner_state.new_prepare(value);
+        self.inner_state = new_state;
+        msg.unwrap()
+    }
+    pub fn new_accept(&mut self, ballot: Ballot, value: C) -> MessageKind<C> {
+        let (msg, new_state) = self.inner_state.new_accept(ballot, value);
         self.inner_state = new_state;
         msg.unwrap()
     }
