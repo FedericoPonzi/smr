@@ -1,7 +1,7 @@
 use crate::CommandTrait;
 /**
  ** * A1: an acceptor can only adopt strictly increasing ballot numbers;
- ** * A2: an acceptor α can only add 〈b, s, c〉 to α.accepted (i.p., accept 〈b, s, c〉) if b = α.ballot num;
+ ** * A2: an acceptor α can only accept 〈b, s, c〉 if b ≥ α.ballot_num (Multi-Paxos: implicit promise);
  ** * A3: acceptor α cannot remove pvalues from α.accepted (we will modify this impractical restriction later);
  ** * A4: Suppose α and α′ are acceptors, with 〈b, s, c〉 ∈ α.accepted and 〈b, s, c′〉 ∈ α′.accepted. Then c = c′.
  **  Informally, given a particular ballot number and slot number, there can be at most one proposed command under consideration by the set of acceptors.
@@ -62,7 +62,8 @@ where
     }
 
     pub fn handle_accept(&mut self, a: Accept<C>) -> MessageKind<C> {
-        if a.ballot == self.max_ballot {
+        if a.ballot >= self.max_ballot {
+            self.max_ballot = a.ballot;
             info!(
                 "Acceptor {}: AckAccept for ballot {} (from sender {})",
                 self.my_id, a.ballot, a.sender

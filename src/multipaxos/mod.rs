@@ -16,8 +16,6 @@ pub(crate) type Ballot = u32;
 
 /// A paxos node is a process that participates in a multipaxos consensus algorithm.
 /// It's the main entry to the paxos algorithm.
-/// TODO: I need to know if a value could still be potentially included in the current round, or if we should start negotiating the next round.
-/// TODO: actually it would be much easier to just use a leader and let them handle it
 pub struct MultiPaxosNode<S>
 where
     S: StateMachine,
@@ -28,6 +26,18 @@ where
     next_instance_id: u64,
     id: u32,
     storage: Option<PaxosStorage<S::Command>>,
+    /// Ballot from the last round this node won. Used as the credential for
+    /// fast-path proposals: `new_accept(ballot, cmd)` reuses this ballot across
+    /// new instances so acceptors accept via implicit promise without Phase 1.
+    leader_ballot: Option<Ballot>,
+    /// Node ID of the known leader (set when we see them win a round).
+    known_leader_id: Option<u32>,
+    /// Senders for proposals forwarded to the leader, keyed by forward_id.
+    forwarded_senders: HashMap<u64, oneshot::Sender<S::Output>>,
+    /// Monotonic counter for unique forward IDs.
+    next_forward_id: u64,
+    /// On the leader: maps instance_id → (forwarder_node_id, forward_id).
+    forwarded_instances: HashMap<u64, (u32, u64)>,
 }
 
 impl<S> MultiPaxosNode<S>
@@ -42,6 +52,11 @@ where
             pending_senders: HashMap::new(),
             next_instance_id: 0,
             storage: None,
+            leader_ballot: None,
+            known_leader_id: None,
+            forwarded_senders: HashMap::new(),
+            next_forward_id: 0,
+            forwarded_instances: HashMap::new(),
         }
     }
 
@@ -70,11 +85,26 @@ where
             pending_senders: HashMap::new(),
             next_instance_id,
             storage: Some(storage),
+            leader_ballot: None,
+            known_leader_id: None,
+            forwarded_senders: HashMap::new(),
+            next_forward_id: 0,
+            forwarded_instances: HashMap::new(),
         })
     }
 
     pub fn id(&self) -> u32 {
         self.id
+    }
+
+    /// Returns true if this node is the current leader.
+    pub fn is_leader(&self) -> bool {
+        self.leader_ballot.is_some()
+    }
+
+    /// Returns the current leader ballot, if this node is the leader.
+    pub fn leader_ballot(&self) -> Option<Ballot> {
+        self.leader_ballot
     }
 
     /// Process a message locally through the PaxosInstance and cascade any responses.
@@ -103,6 +133,24 @@ where
 {
     type SMRMessage = Message<S::Command>;
     fn propose(&mut self, cmd: S::Command) -> Result<ProposalResult<S>> {
+        // Forward to leader if we know someone else is leading
+        if !self.is_leader() && self.known_leader_id.is_some() {
+            info!(
+                "Node {}: not leader, forwarding proposal to node {:?}",
+                self.id, self.known_leader_id
+            );
+            let (sender, receiver) = oneshot::channel();
+            let forward_id = self.next_forward_id;
+            self.next_forward_id += 1;
+            let forward_msg = Message::new(
+                self.id,
+                MessageKind::RequestCommandToLeader { cmd, forward_id },
+                0, // instance_id irrelevant — leader assigns it
+            );
+            self.forwarded_senders.insert(forward_id, sender);
+            return Ok((vec![forward_msg], receiver));
+        }
+
         let instance_id = self.next_instance_id;
         self.next_instance_id += 1;
 
@@ -117,26 +165,96 @@ where
             self.config.total_nodes,
             instance_id,
         );
-        let prepare = instance.proposer.new_prepare(cmd.clone());
-        if let MessageKind::PrepareMsg(ref prep) = prepare {
-            trace::trace_phase1a(self.id, instance_id, prep.ballot);
-        }
+
+        let first_msg = if let Some(ballot) = self.leader_ballot {
+            // Fast path: skip Phase 1, go directly to Accept
+            let accept = instance.proposer.new_accept(ballot, cmd.clone());
+            if let MessageKind::AcceptMsg(ref a) = accept {
+                trace::trace_phase2a(self.id, instance_id, a.ballot, &format!("{:?}", a.command));
+            }
+            accept
+        } else {
+            let prepare = instance.proposer.new_prepare(cmd.clone());
+            if let MessageKind::PrepareMsg(ref prep) = prepare {
+                trace::trace_phase1a(self.id, instance_id, prep.ballot);
+            }
+            prepare
+        };
         self.paxos_instances.insert(instance_id, instance);
 
-        let mut outgoing_messages = vec![Message::new(self.id, prepare.clone(), instance_id)];
-        self.self_deliver(instance_id, prepare, &mut outgoing_messages)?;
+        let mut outgoing_messages = vec![Message::new(self.id, first_msg.clone(), instance_id)];
+        self.self_deliver(instance_id, first_msg, &mut outgoing_messages)?;
 
         let (sender, receiver) = oneshot::channel();
         self.pending_senders.insert(instance_id, sender);
         Ok((outgoing_messages, receiver))
     }
+
     fn handle_message(
         &mut self,
         paxos_msg: Message<S::Command>,
     ) -> Result<Vec<Message<S::Command>>> {
+        // Intercept forwarded proposals at this level — leader assigns instance_id.
+        if let MessageKind::RequestCommandToLeader { cmd, forward_id } = paxos_msg.clone().kind() {
+            if self.is_leader() {
+                let forwarder_id = paxos_msg.sender_id();
+                info!(
+                    "Node {}: handling forwarded proposal cmd={:?} from node {}",
+                    self.id, cmd, forwarder_id
+                );
+                let (mut msgs, _rx) = self.propose(cmd)?;
+                // Track which instance this forwarded proposal maps to
+                let instance_id = self.next_instance_id - 1; // propose() already incremented
+                self.forwarded_instances
+                    .insert(instance_id, (forwarder_id, forward_id));
+                // Send ForwardAck so the forwarder can map forward_id → instance_id
+                msgs.push(Message::new(
+                    self.id,
+                    MessageKind::ForwardAck {
+                        forward_id,
+                        instance_id,
+                    },
+                    instance_id,
+                ));
+                return Ok(msgs);
+            }
+            info!(
+                "Node {}: received forwarded proposal but not leader, dropping",
+                self.id
+            );
+            return Ok(vec![]);
+        }
+
+        // Handle ForwardAck: move sender from forwarded_senders to pending_senders
+        if let MessageKind::ForwardAck {
+            forward_id,
+            instance_id,
+        } = paxos_msg.clone().kind()
+        {
+            if let Some(sender) = self.forwarded_senders.remove(&forward_id) {
+                info!(
+                    "Node {}: ForwardAck received, mapping forward_id={} to instance={}",
+                    self.id, forward_id, instance_id
+                );
+                self.pending_senders.insert(instance_id, sender);
+            }
+            return Ok(vec![]);
+        }
+
         let mut outgoing_messages = Vec::new();
 
         let instance_id = paxos_msg.instance_id();
+        let msg_kind = paxos_msg.kind();
+        let is_incoming_learn = matches!(&msg_kind, MessageKind::LearnMsg(_));
+        let incoming_learn_sender = match &msg_kind {
+            MessageKind::LearnMsg(learn) => Some(learn.sender),
+            _ => None,
+        };
+        let incoming_nack_accept_ballot = match &msg_kind {
+            MessageKind::NackAcceptMsg(nack) => Some(nack.max_ballot),
+            _ => None,
+        };
+
         info!(
             "Node {}: received network message for instance {}",
             self.id, instance_id
@@ -156,8 +274,50 @@ where
 
         let response = {
             let paxos_instance = self.paxos_instances.get_mut(&instance_id).unwrap();
-            paxos_instance.handle_message(paxos_msg.kind(), self.storage.as_mut())?
+            paxos_instance.handle_message(msg_kind, self.storage.as_mut())?
         };
+
+        if let Some(ref response) = response {
+            // Our proposer produced a Learn (from AckAccept quorum) → we won this round
+            if !is_incoming_learn && let MessageKind::LearnMsg(learn) = response {
+                info!(
+                    "Node {}: won round for instance {} with ballot {}",
+                    self.id, instance_id, learn.ballot
+                );
+                self.leader_ballot = Some(learn.ballot);
+                self.known_leader_id = None; // we are the leader
+            }
+            // We promised a higher ballot → our old leader ballot is no longer valid
+            if let MessageKind::PromiseMsg(promise) = response
+                && let Some(lb) = self.leader_ballot
+                && promise.ballot > lb
+            {
+                info!(
+                    "Node {}: lost leadership (promised ballot {} > leader ballot {})",
+                    self.id, promise.ballot, lb
+                );
+                self.leader_ballot = None;
+            }
+        }
+
+        // Incoming NackAccept means someone has a higher ballot → our fast path is stale
+        if let Some(nack_ballot) = incoming_nack_accept_ballot
+            && let Some(lb) = self.leader_ballot
+            && nack_ballot > lb
+        {
+            info!(
+                "Node {}: lost leadership (NackAccept max_ballot {} > leader ballot {})",
+                self.id, nack_ballot, lb
+            );
+            self.leader_ballot = None;
+        }
+
+        // Track known leader from incoming Learn messages from other nodes
+        if let Some(proposer_id) = incoming_learn_sender
+            && proposer_id != self.id
+        {
+            self.known_leader_id = Some(proposer_id);
+        }
 
         if let Some(response) = response {
             outgoing_messages.push(Message::new(self.id, response.clone(), instance_id));
@@ -166,7 +326,6 @@ where
         Ok(outgoing_messages)
     }
 
-    // actively push a value.
     fn get_commit_id(&mut self, id: u64) -> Option<CommitResult<S>> {
         let instance = self.paxos_instances.get(&id)?;
         let command = instance.get_value()?;

@@ -194,8 +194,10 @@ where
             MessageKind::NackAcceptMsg(nack) => self
                 .proposer
                 .handle_message(MessageKind::NackAcceptMsg(nack)),
-            MessageKind::RequestCommandToLeader(_cmd) => {
-                let response = self.proposer.handle_message(message);
+            MessageKind::RequestCommandToLeader { cmd, .. } => {
+                let response = self
+                    .proposer
+                    .handle_message(MessageKind::RequestCommandToLeader { cmd, forward_id: 0 });
                 if let Some(MessageKind::PrepareMsg(ref prep)) = response {
                     super::trace::trace_phase1a(self.acceptor.my_id, self.instance_id, prep.ballot);
                 }
@@ -236,7 +238,13 @@ mod tests {
                 promise
             );
         }
-        let propose = paxos.handle_message(RequestCommandToLeader(123), None)?;
+        let propose = paxos.handle_message(
+            RequestCommandToLeader {
+                cmd: 123,
+                forward_id: 0,
+            },
+            None,
+        )?;
         let proposer_ballot = match &propose {
             Some(MessageKind::PrepareMsg(p)) => p.ballot,
             _ => panic!("expected PrepareMsg, got {:?}", propose),

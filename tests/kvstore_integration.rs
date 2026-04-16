@@ -9,6 +9,25 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 
 const SMR_PORTS: [u16; 3] = [29100, 29101, 29102];
 const HTTP_PORTS: [u16; 3] = [29200, 29201, 29202];
+const DATA_DIRS: [&str; 3] = [
+    "data/kvstore-node-0",
+    "data/kvstore-node-1",
+    "data/kvstore-node-2",
+];
+
+/// RAII guard that kills child processes on drop — ensures cleanup even on panic.
+struct ClusterGuard {
+    nodes: Vec<Child>,
+}
+
+impl Drop for ClusterGuard {
+    fn drop(&mut self) {
+        for node in self.nodes.iter_mut() {
+            let _ = node.kill();
+            let _ = node.wait();
+        }
+    }
+}
 
 struct HttpResponse {
     status: u16,
@@ -135,15 +154,13 @@ async fn wait_for_cluster_ready() {
     panic!("Cluster never became ready");
 }
 
-fn kill_all(nodes: &mut [Child]) {
-    for node in nodes.iter_mut() {
-        let _ = node.kill();
-        let _ = node.wait();
-    }
-}
-
 #[tokio::test]
 async fn test_kvstore_cluster() {
+    // Clean stale persistent state from previous runs
+    for dir in &DATA_DIRS {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     // Build the example first (no-op if already built)
     let build = Command::new(env!("CARGO"))
         .args(["build", "--example", "kvstore"])
@@ -151,7 +168,11 @@ async fn test_kvstore_cluster() {
         .expect("Failed to build kvstore example");
     assert!(build.success(), "kvstore example failed to build");
 
-    let mut nodes: Vec<Child> = (0..3).map(|id| spawn_node(id, &SMR_PORTS)).collect();
+    // ClusterGuard ensures child processes are killed even if the test panics,
+    // preventing orphan processes from blocking ports on subsequent runs.
+    let _guard = ClusterGuard {
+        nodes: (0..3).map(|id| spawn_node(id, &SMR_PORTS)).collect(),
+    };
 
     let result = timeout(TIMEOUT, async {
         // Wait for all HTTP servers and SMR mesh to be ready
@@ -206,6 +227,6 @@ async fn test_kvstore_cluster() {
     })
     .await;
 
-    kill_all(&mut nodes);
+    // _guard drops here, killing all child processes even if result is Err
     result.expect("Test timed out");
 }

@@ -2,13 +2,14 @@
 
 [![CI](https://github.com/FedericoPonzi/smr/actions/workflows/CI.yml/badge.svg)](https://github.com/FedericoPonzi/smr/actions/workflows/CI.yml)
 
-A Rust library for studying and implementing state machine replication algorithms. Currently, supports (an incomplete
-version of) Multi-Paxos.
-Incomplete because it is not electing a leader yet, it is just running the synod protocol.
+An easy-to-use Rust library that exposes a replicated state machine interface. Currently, only Multi-Paxos is supported.
+The idea is to have a consistent interface backed by different algorithms.
 
 The library uses a replicated log: a cluster of nodes agrees on log entries through consensus. You define a state
 machine and its commands — the library handles replication, so the same commands are applied in the same order on every
 node.
+
+You don't need to know how Paxos or consensus works to use this library.
 
 ## Quick start
 
@@ -36,7 +37,8 @@ Set `RUST_LOG=info` (or `RUST_LOG=smr=info`) to see the Paxos protocol in action
 
 ### Distributed key-value store
 
-The kvstore example uses [sled](https://docs.rs/sled) for persistent storage — data survives restarts. Storage is written to `data/kvstore-node-{id}/`.
+The kvstore example uses [sled](https://docs.rs/sled) for persistent storage — data survives restarts. Storage is
+written to `data/kvstore-node-{id}/`.
 
 ```bash
 # Start a 3-node cluster (in separate terminals, or use the helper script)
@@ -66,21 +68,9 @@ curl -X POST http://localhost:8080/decrement   # → 1
 curl http://localhost:8082/value               # → 1
 ```
 
-## How it works
-
-Each node runs as a proposer, acceptor, and learner simultaneously. For now, there is no stable leader — any node can
-propose a
-value. The Paxos protocol ensures all nodes agree on the same sequence of commands:
-
-1. **Prepare/Promise** — proposer picks a ballot, asks acceptors to promise
-2. **Accept/AckAccept** — once a quorum promises, proposer asks them to accept a value
-3. **Learn** — once a quorum accepts, the value is learned and applied
-
-Nack messages allow fast recovery when ballots conflict.
-
 ## Testing
 
 Testing is done at different levels: unit tests, integration tests, end-to-end tests, and simulation tests.
 
 Simulation tests are used to generate random execution traces which are then tested against the correctness of the
-consensus algorithm using TLA+. For more information on the last one, check the tla+
+consensus algorithm using TLA+.
