@@ -75,8 +75,7 @@ impl KeyValueStore {
     }
     async fn propose(&self, command: Command) -> anyhow::Result<Option<String>> {
         let mut lc = self.inner.write().await;
-        let rx = lc.propose(command).await?;
-        drop(lc);
-        Ok(rx.await?)
+        let output = lc.propose(command).await?;
+        Ok(output)
     }
 }

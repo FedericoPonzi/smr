@@ -65,8 +65,7 @@ impl CounterStore {
 
     async fn propose(&self, command: Command) -> anyhow::Result<i64> {
         let mut lc = self.inner.write().await;
-        let rx = lc.propose(command).await?;
-        drop(lc);
-        Ok(rx.await?)
+        let output = lc.propose(command).await?;
+        Ok(output)
     }
 }

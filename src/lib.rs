@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
@@ -86,6 +87,8 @@ pub struct SmrConfig {
     total_nodes: u32,
     pub other_nodes: Vec<(u32, String)>,
     pub bind_address: String,
+    /// How long to wait for a proposal to commit before returning an error.
+    pub proposal_timeout: Duration,
 }
 
 impl SmrConfig {
@@ -105,6 +108,7 @@ impl SmrConfig {
             bind_address: bind_address.unwrap_or("127.0.0.1".to_owned()),
             total_nodes: other_nodes.len() as u32 + 1,
             other_nodes,
+            proposal_timeout: Duration::from_secs(5),
         })
     }
 
@@ -228,12 +232,19 @@ where
         })
     }
 
-    pub async fn propose(&mut self, v: S::Command) -> Result<oneshot::Receiver<S::Output>> {
+    pub async fn propose(&mut self, v: S::Command) -> Result<S::Output> {
         let mut inner = self.inner.lock().await;
         let id = self.next_proposal_id;
         self.next_proposal_id += 1;
         self.pending_proposals.insert(id, (v.clone(), None));
-        inner.propose(v).await
+        let timeout = inner.config.proposal_timeout;
+        let rx = inner.propose(v).await?;
+        drop(inner);
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(output)) => Ok(output),
+            Ok(Err(_)) => anyhow::bail!("proposal channel closed"),
+            Err(_) => anyhow::bail!("proposal timed out"),
+        }
     }
 }
 
@@ -406,9 +417,6 @@ where
         <S as StateMachine>::Command: 'static,
     {
         let mut alg = self.algorithm.lock().await;
-        // TODO: this might not be enough, as a proposal might not go through in the current round.
-        // but it's a start. ideally, this adds to a proposal list, and another thread
-        // continuosly tries to push proposals
         let (ret, resp) = alg.propose(cmd)?;
         for m in ret {
             self.outbox.send(m).await?;
